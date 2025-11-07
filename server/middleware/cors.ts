@@ -29,7 +29,7 @@ const getAllowedOrigins = () => {
 };
 
 export const corsConfig = cors({
-  origin: (origin, callback) => {
+  origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
     const allowedOrigins = getAllowedOrigins();
     
     console.log('CORS Origin check:', origin);

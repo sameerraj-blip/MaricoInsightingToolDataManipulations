@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import multer from "multer";
 import { parseFile, createDataSummary } from "../lib/fileParser.js";
 import { analyzeUpload } from "../lib/dataAnalyzer.js";
 import { uploadResponseSchema } from "../../shared/schema.js";
@@ -7,7 +8,7 @@ import { uploadFileToBlob } from "../lib/blobStorage.js";
 import { chunkData, generateChunkEmbeddings, clearVectorStore } from "../lib/ragService.js";
 
 export const uploadFile = async (
-  req: Request & { file?: Express.Multer.File },
+  req: Request & { file?: multer.File },
   res: Response
 ) => {
   const startTime = Date.now();

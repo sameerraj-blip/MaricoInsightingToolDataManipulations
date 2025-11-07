@@ -1,7 +1,7 @@
 import { BaseHandler, HandlerContext, HandlerResponse } from './baseHandler.js';
 import { AnalysisIntent } from '../intentClassifier.js';
 import { findMatchingColumn } from '../utils/columnMatcher.js';
-import { ChartSpec } from '../../../../shared/schema.js';
+import { ChartSpec, DataSummary } from '../../../../shared/schema.js';
 
 /**
  * Statistical Handler
@@ -210,7 +210,7 @@ export class StatisticalHandler extends BaseHandler {
     return isNaN(parsed) ? null : parsed;
   }
 
-  private findSimilarColumns(searchName: string, summary: DataSummary): string[] {
+  protected findSimilarColumns(searchName: string, summary: DataSummary): string[] {
     const allColumns = summary.columns.map(c => c.name);
     const suggestions: string[] = [];
     const searchLower = searchName.toLowerCase();

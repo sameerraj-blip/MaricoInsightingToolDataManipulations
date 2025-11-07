@@ -70,6 +70,12 @@ Make sure to add these in Vercel Dashboard → Settings → Environment Variable
 - `OPENAI_API_KEY` - Your OpenAI API key
 - `NODE_ENV=production`
 
+### Azure AD (Required for Authentication):
+- `VITE_AZURE_CLIENT_ID` - Your Azure AD Client ID (`5e4faaa4-8f8b-4766-a2d5-d382004beea2`)
+- `VITE_AZURE_TENANT_ID` - Your Azure AD Tenant ID
+- `VITE_AZURE_REDIRECT_URI` - `https://marico-insight-safe.vercel.app` (optional, code uses window.location.origin)
+- `VITE_AZURE_POST_LOGOUT_REDIRECT_URI` - `https://marico-insight-safe.vercel.app` (optional)
+
 ### Optional (if using):
 - `AZURE_COSMOSDB_ENDPOINT`
 - `AZURE_COSMOSDB_KEY`
@@ -77,6 +83,18 @@ Make sure to add these in Vercel Dashboard → Settings → Environment Variable
 - `AZURE_CLIENT_ID`
 - `AZURE_CLIENT_SECRET`
 - `AZURE_TENANT_ID`
+
+## ⚠️ IMPORTANT: Azure AD Configuration
+
+**You MUST add your Vercel URL to Azure AD redirect URIs!**
+
+1. Go to [Azure Portal](https://portal.azure.com) → Azure AD → App registrations
+2. Find app: `5e4faaa4-8f8b-4766-a2d5-d382004beea2`
+3. Go to **Authentication** → **Single-page application**
+4. Add redirect URI: `https://marico-insight-safe.vercel.app`
+5. Save
+
+See `VERCEL_AZURE_AD_FIX.md` for detailed instructions.
 
 ## 🔧 How It Works
 

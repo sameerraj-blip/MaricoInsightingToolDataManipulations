@@ -1,4 +1,4 @@
-import { ChartSpec, Insight, DataSummary, Message } from '@shared/schema.js';
+import { ChartSpec, Insight, DataSummary, Message } from '../../shared/schema.js';
 import { openai, MODEL } from './openai.js';
 import { processChartData } from './chartGenerator.js';
 import { analyzeCorrelations } from './correlationAnalyzer.js';

@@ -3,7 +3,7 @@ import {
   addChartToDashboardRequestSchema,
   createDashboardRequestSchema,
   removeChartFromDashboardRequestSchema,
-} from "@shared/schema.js";
+} from "../../shared/schema.js";
 import {
   addChartToDashboard,
   createDashboard,

@@ -2,7 +2,7 @@ import { AnalysisIntent, classifyIntent } from './intentClassifier.js';
 import { resolveContextReferences } from './contextResolver.js';
 import { retrieveContext } from './contextRetriever.js';
 import { BaseHandler, HandlerContext, HandlerResponse } from './handlers/baseHandler.js';
-import { DataSummary, Message, ChartSpec, Insight } from '@shared/schema.js';
+import { DataSummary, Message, ChartSpec, Insight } from '../../../shared/schema.js';
 import { createErrorResponse, getFallbackSuggestions } from './utils/errorRecovery.js';
 import { askClarifyingQuestion } from './utils/clarification.js';
 

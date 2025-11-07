@@ -2,7 +2,7 @@ import { Request, Response } from "express";
 import { answerQuestion } from "../lib/dataAnalyzer.js";
 import { processChartData } from "../lib/chartGenerator.js";
 import { generateChartInsights } from "../lib/insightGenerator.js";
-import { chatResponseSchema } from "@shared/schema.js";
+import { chatResponseSchema } from "../../shared/schema.js";
 import { getChatBySessionIdEfficient, addMessageToChat, addMessagesBySessionId } from "../lib/cosmosDB.js";
 
 export const chatWithAI = async (req: Request, res: Response) => {

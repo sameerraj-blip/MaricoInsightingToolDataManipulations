@@ -1,6 +1,6 @@
 import { parse } from 'csv-parse/sync';
 import * as XLSX from 'xlsx';
-import { DataSummary } from '@shared/schema.js';
+import { DataSummary } from '../../shared/schema.js';
 
 export async function parseFile(buffer: Buffer, filename: string): Promise<Record<string, any>[]> {
   const ext = filename.split('.').pop()?.toLowerCase();

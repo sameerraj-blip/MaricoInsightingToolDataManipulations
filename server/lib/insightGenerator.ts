@@ -1,4 +1,4 @@
-import { ChartSpec, DataSummary } from '@shared/schema.js';
+import { ChartSpec, DataSummary } from '../../shared/schema.js';
 import { openai, MODEL } from './openai.js';
 
 export async function generateChartInsights(

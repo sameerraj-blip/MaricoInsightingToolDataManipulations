@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { openai } from '../openai.js';
 import { getModelForTask } from './models.js';
-import { DataSummary, Message } from '@shared/schema.js';
+import { DataSummary, Message } from '../../../shared/schema.js';
 
 /**
  * Analysis Intent Schema

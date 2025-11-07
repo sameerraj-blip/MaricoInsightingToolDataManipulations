@@ -1,4 +1,4 @@
-import { ChartSpec } from '@shared/schema.js';
+import { ChartSpec } from '../../shared/schema.js';
 
 // Helper to clean numeric values (strip %, commas, etc.)
 function toNumber(value: any): number {

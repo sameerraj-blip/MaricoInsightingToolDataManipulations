@@ -1,7 +1,7 @@
 import { Request, Response } from "express";
 import { parseFile, createDataSummary } from "../lib/fileParser.js";
 import { analyzeUpload } from "../lib/dataAnalyzer.js";
-import { uploadResponseSchema } from "@shared/schema.js";
+import { uploadResponseSchema } from "../../shared/schema.js";
 import { createChatDocument, generateColumnStatistics } from "../lib/cosmosDB.js";
 import { uploadFileToBlob } from "../lib/blobStorage.js";
 import { chunkData, generateChunkEmbeddings, clearVectorStore } from "../lib/ragService.js";

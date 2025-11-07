@@ -22,12 +22,36 @@ interface ChatInterfaceProps {
   totalColumns?: number;
 }
 
-const SUGGESTIONS = [
-  "What affects revenue?",
-  "Show me trends over time",
-  "What are the top performers?",
-  "Analyze correlations in the data"
-];
+// Dynamic suggestions based on conversation context
+const getSuggestions = (messages: Message[], columns?: string[], numericColumns?: string[]) => {
+  // If there's conversation history, suggest follow-ups
+  if (messages.length > 1) {
+    const lastMessage = messages[messages.length - 1];
+    if (lastMessage.role === 'assistant' && lastMessage.content) {
+      // Extract mentioned columns from last response
+      const mentionedCols = (columns || []).filter(col => 
+        lastMessage.content.toLowerCase().includes(col.toLowerCase())
+      );
+      
+      if (mentionedCols.length > 0) {
+        return [
+          `Tell me more about ${mentionedCols[0]}`,
+          `What affects ${mentionedCols[0]}?`,
+          `Show me trends for ${mentionedCols[0]}`,
+          "What else can you show me?"
+        ];
+      }
+    }
+  }
+  
+  // Default suggestions
+  return [
+    "What affects revenue?",
+    "Show me trends over time",
+    "What are the top performers?",
+    "Analyze correlations in the data"
+  ];
+};
 
 export function ChatInterface({ 
   messages, 
@@ -120,7 +144,7 @@ export function ChatInterface({
             <div className="mb-4">
               <h3 className="text-base font-semibold text-gray-900 mb-3 text-center">Try asking:</h3>
               <div className="flex flex-wrap gap-2 justify-center" data-testid="suggestion-chips">
-                {SUGGESTIONS.map((suggestion, idx) => (
+                {getSuggestions(messages, columns, numericColumns).map((suggestion, idx) => (
                   <Button
                     key={idx}
                     variant="outline"
@@ -129,6 +153,26 @@ export function ChatInterface({
                     disabled={isLoading}
                     data-testid={`suggestion-${idx}`}
                     className="text-xs px-3 py-1.5 rounded-full border-gray-200 hover:border-primary hover:bg-primary/5 transition-colors"
+                  >
+                    {suggestion}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          )}
+          
+          {/* Show follow-up suggestions after assistant messages */}
+          {messages.length > 0 && messages[messages.length - 1].role === 'assistant' && !isLoading && (
+            <div className="mb-4 mt-2">
+              <div className="flex flex-wrap gap-2 justify-center">
+                {getSuggestions(messages, columns, numericColumns).slice(0, 3).map((suggestion, idx) => (
+                  <Button
+                    key={idx}
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => handleSuggestionClick(suggestion)}
+                    disabled={isLoading}
+                    className="text-xs px-3 py-1.5 rounded-full text-gray-600 hover:text-primary hover:bg-primary/5 transition-colors"
                   >
                     {suggestion}
                   </Button>

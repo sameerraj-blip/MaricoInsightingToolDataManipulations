@@ -1,4 +1,4 @@
-import { ChartSpec, Insight, DataSummary } from '@shared/schema.js';
+import { ChartSpec, Insight, DataSummary } from '../../shared/schema.js';
 import { openai, MODEL } from './openai.js';
 import { generateChartInsights } from './insightGenerator.js';
 

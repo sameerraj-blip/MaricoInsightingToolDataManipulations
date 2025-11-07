@@ -8,7 +8,7 @@ import sessionRoutes from "./sessions.js";
 import dataRetrievalRoutes from "./dataRetrieval.js";
 import dashboardRoutes from "./dashboards.js";
 
-export async function registerRoutes(app: Express): Promise<Server | void> {
+export function registerRoutes(app: Express): Server | void {
   // Register route modules
   app.use('/api', uploadRoutes);
   app.use('/api', chatRoutes);

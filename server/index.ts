@@ -25,10 +25,7 @@ export function createApp() {
   });
 
   // Register all routes (synchronous)
-  // Routes are registered immediately, services initialize in background
-  registerRoutes(app).catch((error) => {
-    console.error("Failed to register routes:", error);
-  });
+  registerRoutes(app);
 
   // Initialize optional services in background (non-blocking)
   // These are optional, so we don't wait for them
@@ -48,12 +45,11 @@ export function createApp() {
   return app;
 }
 
-// For Vercel: create app synchronously (will be initialized on first request)
 // For local: create and start server
 if (!process.env.VERCEL) {
   (async () => {
     try {
-      const app = await createApp();
+      const app = createApp();
       const { createServer } = await import("http");
       const server = createServer(app);
       const port = process.env.PORT || 3003;

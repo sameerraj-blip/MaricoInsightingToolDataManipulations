@@ -226,7 +226,7 @@ export class StatisticalHandler extends BaseHandler {
     return suggestions;
   }
 
-  private createErrorResponse(
+  protected createErrorResponse(
     error: Error | string,
     intent: AnalysisIntent,
     suggestions?: string[]

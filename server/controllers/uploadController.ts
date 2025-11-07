@@ -8,7 +8,7 @@ import { uploadFileToBlob } from "../lib/blobStorage.js";
 import { chunkData, generateChunkEmbeddings, clearVectorStore } from "../lib/ragService.js";
 
 export const uploadFile = async (
-  req: Request & { file?: multer.File },
+  req: Request & { file?: Express.Multer.File },
   res: Response
 ) => {
   const startTime = Date.now();

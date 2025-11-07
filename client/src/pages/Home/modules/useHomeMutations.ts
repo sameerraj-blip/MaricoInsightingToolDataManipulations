@@ -54,10 +54,10 @@ export const useHomeMutations = ({
         setTotalColumns(data.summary.columnCount);
       }
       
-      // Create initial assistant message with charts and insights
+      // Create initial assistant message with charts and insights - more conversational
       const initialMessage: Message = {
         role: 'assistant',
-        content: `I've analyzed your data! Here's what I found:\n\n📊 ${data.summary.rowCount} rows and ${data.summary.columnCount} columns\n🔢 ${data.summary.numericColumns.length} numeric columns\n📅 ${data.summary.dateColumns.length} date columns\n\nI've generated ${data.charts.length} visualizations and ${data.insights.length} key insights for you. Feel free to ask me any questions about your data!`,
+        content: `Hi! 👋 I've just finished analyzing your data. Here's what I found:\n\n📊 Your dataset has ${data.summary.rowCount} rows and ${data.summary.columnCount} columns\n🔢 ${data.summary.numericColumns.length} numeric columns to work with\n📅 ${data.summary.dateColumns.length} date columns for time-based analysis\n\nI've created ${data.charts.length} visualizations and ${data.insights.length} key insights to get you started. Feel free to ask me anything about your data - I'm here to help! What would you like to explore first?`,
         charts: data.charts,
         insights: data.insights,
         timestamp: Date.now(),
@@ -81,25 +81,70 @@ export const useHomeMutations = ({
 
   const chatMutation = useMutation({
     mutationFn: async (message: string) => {
-      return apiRequest<ChatResponse>({
-        method: 'POST',
-        route: '/api/chat',
-        data: {
-          sessionId,
-          message,
-        },
+      console.log('📤 Sending chat message:', message);
+      console.log('📋 SessionId:', sessionId);
+      console.log('💬 Chat history length:', messages.length);
+      
+      // Send full chat history for context (last 15 messages to maintain conversation flow)
+      const chatHistory = messages.slice(-15).map(msg => ({
+        role: msg.role,
+        content: msg.content,
+      }));
+      
+      console.log('📤 Request payload:', {
+        sessionId,
+        message,
+        chatHistoryLength: chatHistory.length,
       });
+      
+      try {
+        const response = await apiRequest<ChatResponse>({
+          method: 'POST',
+          route: '/api/chat',
+          data: {
+            sessionId,
+            message,
+            chatHistory,
+          },
+        });
+        
+        console.log('✅ API request successful, response:', response);
+        return response;
+      } catch (error) {
+        console.error('❌ API request failed:', error);
+        throw error;
+      }
     },
     onSuccess: (data, message) => {
+      console.log('✅ Chat response received:', data);
+      console.log('📝 Answer:', data.answer);
+      console.log('📊 Charts:', data.charts?.length || 0);
+      console.log('💡 Insights:', data.insights?.length || 0);
+      
+      if (!data.answer || data.answer.trim().length === 0) {
+        console.error('❌ Empty answer received from server!');
+        toast({
+          title: 'Error',
+          description: 'Received empty response from server. Please try again.',
+          variant: 'destructive',
+        });
+        return;
+      }
+      
       const assistantMessage: Message = {
         role: 'assistant',
-        content: data.answer || '',
+        content: data.answer,
         charts: data.charts,
         insights: data.insights,
         timestamp: Date.now(),
       };
       
-      setMessages((prev) => [...prev, assistantMessage]);
+      console.log('💬 Adding assistant message to chat:', assistantMessage.content.substring(0, 50));
+      setMessages((prev) => {
+        const updated = [...prev, assistantMessage];
+        console.log('📋 Total messages now:', updated.length);
+        return updated;
+      });
     },
     onError: (error) => {
       toast({

@@ -7,26 +7,34 @@ import { getChatBySessionIdEfficient, addMessageToChat, addMessagesBySessionId }
 
 export const chatWithAI = async (req: Request, res: Response) => {
   try {
+    console.log('📨 chatWithAI() called');
     const { sessionId, message, chatHistory } = req.body;
     const username = req.body.username || req.headers['x-user-email'] || 'anonymous@example.com';
 
+    console.log('📥 Request body:', { sessionId, message: message?.substring(0, 50), chatHistoryLength: chatHistory?.length });
+
     if (!sessionId || !message) {
+      console.log('❌ Missing required fields');
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
     // Get chat document from CosmosDB by session ID
+    console.log('🔍 Fetching chat document for sessionId:', sessionId);
     const chatDocument = await getChatBySessionIdEfficient(sessionId);
 
     if (!chatDocument) {
+      console.log('❌ Chat document not found');
       return res.status(404).json({ error: 'Session not found. Please upload a file first.' });
     }
 
+    console.log('✅ Chat document found, calling answerQuestion()');
     // Answer the question using data from CosmosDB
     const result = await answerQuestion(
       chatDocument.rawData, // Use the actual data stored in CosmosDB
       message,
       chatHistory || [],
-      chatDocument.dataSummary
+      chatDocument.dataSummary,
+      sessionId // Pass sessionId for RAG
     );
 
     // Ensure every chart has per-chart keyInsight and recommendation before validation
@@ -53,8 +61,27 @@ export const chatWithAI = async (req: Request, res: Response) => {
       }
     }
 
+    // Validate response has answer
+    if (!result || !result.answer || result.answer.trim().length === 0) {
+      console.error('❌ Empty answer from answerQuestion:', result);
+      return res.status(500).json({
+        error: 'Failed to generate response. Please try again.',
+        answer: "I'm sorry, I couldn't generate a response. Please try rephrasing your question.",
+      });
+    }
+    
+    console.log('✅ Answer generated:', result.answer.substring(0, 100));
+    console.log('📤 Response being sent:', {
+      answerLength: result.answer?.length,
+      hasCharts: !!result.charts,
+      chartsCount: result.charts?.length || 0,
+      hasInsights: !!result.insights,
+      insightsCount: result.insights?.length || 0,
+    });
+    
     // Validate response
     let validated = chatResponseSchema.parse(result);
+    console.log('✅ Response validated successfully');
 
     // Ensure overall chat insights always present: derive from charts if missing
     if ((!validated.insights || validated.insights.length === 0) && Array.isArray(validated.charts) && validated.charts.length > 0) {
@@ -94,11 +121,22 @@ export const chatWithAI = async (req: Request, res: Response) => {
       // Continue without failing the chat - CosmosDB is optional
     }
 
+    console.log('📨 Sending response to client:', {
+      answerLength: validated.answer.length,
+      chartsCount: validated.charts?.length || 0,
+      insightsCount: validated.insights?.length || 0,
+    });
     res.json(validated);
+    console.log('✅ Response sent successfully');
   } catch (error) {
     console.error('Chat error:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Failed to process message';
+    // Always return a valid response with an answer field
     res.status(500).json({
-      error: error instanceof Error ? error.message : 'Failed to process message',
+      error: errorMessage,
+      answer: `I'm sorry, I encountered an error: ${errorMessage}. Please try again or rephrase your question.`,
+      charts: [],
+      insights: [],
     });
   }
 };

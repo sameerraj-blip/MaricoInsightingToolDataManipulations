@@ -1,0 +1,273 @@
+import { z } from 'zod';
+import { openai } from '../openai.js';
+import { getModelForTask } from './models.js';
+import { DataSummary, Message } from '@shared/schema.js';
+
+/**
+ * Analysis Intent Schema
+ * Defines the structure of an analyzed user intent
+ */
+export const analysisIntentSchema = z.object({
+  type: z.enum(['correlation', 'chart', 'statistical', 'conversational', 'comparison', 'custom']),
+  confidence: z.number().min(0).max(1),
+  targetVariable: z.string().optional(),
+  variables: z.array(z.string()).optional(),
+  chartType: z.enum(['line', 'bar', 'scatter', 'pie', 'area']).optional(),
+  filters: z.object({
+    correlationSign: z.enum(['positive', 'negative', 'all']).optional(),
+    excludeVariables: z.array(z.string()).optional(),
+    includeOnly: z.array(z.string()).optional(),
+    exceptions: z.array(z.string()).optional(),
+    minCorrelation: z.number().optional(),
+    maxCorrelation: z.number().optional(),
+  }).optional(),
+  axisMapping: z.object({
+    x: z.string().optional(),
+    y: z.string().optional(),
+    y2: z.string().optional(),
+  }).optional(),
+  customRequest: z.string().optional(),
+  requiresClarification: z.boolean().optional(),
+});
+
+export type AnalysisIntent = z.infer<typeof analysisIntentSchema> & {
+  originalQuestion?: string; // Added by orchestrator
+};
+
+/**
+ * Normalize question for caching
+ */
+function normalizeQuestion(question: string): string {
+  return question
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/[^\w\s]/g, '');
+}
+
+/**
+ * Recursively remove ALL null values (Zod doesn't accept null for optional fields)
+ */
+function removeNulls(obj: any): any {
+  if (obj === null || obj === undefined) {
+    return undefined;
+  }
+  
+  if (Array.isArray(obj)) {
+    return obj.map(removeNulls).filter(item => item !== undefined);
+  }
+  
+  if (typeof obj === 'object') {
+    const cleaned: any = {};
+    for (const [key, value] of Object.entries(obj)) {
+      const cleanedValue = removeNulls(value);
+      if (cleanedValue !== undefined) {
+        cleaned[key] = cleanedValue;
+      }
+    }
+    return Object.keys(cleaned).length > 0 ? cleaned : undefined;
+  }
+  
+  return obj;
+}
+
+/**
+ * Classify user intent using AI with structured output
+ * Includes retry logic and validation
+ */
+export async function classifyIntent(
+  question: string,
+  chatHistory: Message[],
+  summary: DataSummary,
+  maxRetries: number = 2
+): Promise<AnalysisIntent> {
+  // Build context from chat history
+  const recentHistory = chatHistory
+    .slice(-10)
+    .filter(msg => msg.content && msg.content.length < 500)
+    .map((msg) => `${msg.role}: ${msg.content}`)
+    .join('\n');
+
+  const historyContext = recentHistory ? `\n\nCONVERSATION HISTORY:\n${recentHistory}` : '';
+
+  // Build available columns context
+  const allColumns = summary.columns.map(c => c.name).join(', ');
+  const numericColumns = (summary.numericColumns || []).join(', ');
+  const dateColumns = (summary.dateColumns || []).join(', ');
+
+  const prompt = `You are an intent classifier for a data analysis AI assistant. Analyze the user's question and extract their intent.
+
+QUESTION: ${question}
+${historyContext}
+
+AVAILABLE DATA:
+- Total rows: ${summary.rowCount}
+- Total columns: ${summary.columnCount}
+- All columns: ${allColumns}
+- Numeric columns: ${numericColumns}
+${dateColumns ? `- Date columns: ${dateColumns}` : ''}
+
+CLASSIFICATION RULES:
+1. "correlation" - User asks about relationships, what affects/influences something, or correlation between variables
+2. "chart" - User explicitly requests a chart/visualization (line, bar, scatter, pie, area)
+3. "statistical" - User asks for statistics (mean, median, average, sum, count, max, min, highest, lowest, best, worst) OR asks "which month/row/period has the [highest/lowest/best/worst] [variable]" - these are statistical queries, NOT comparison queries
+4. "comparison" - User wants to compare variables, find "best" option, rank items, or asks "which is better/best" (vs, and, between, best competitor/product/brand, ranking)
+5. "conversational" - Greetings, thanks, casual chat, questions about the bot
+6. "custom" - Doesn't fit other categories
+
+IMPORTANT: Questions like "what is the best competitor to X?" or "which product is best for Y?" should be classified as "comparison", NOT "correlation" or "custom".
+
+IMPORTANT: Questions like "which month had the highest X?", "which was the best month for X?", "what is the maximum value of X?", or "which month had the best X?" should be classified as "statistical", NOT "correlation" or "comparison". The word "best" in the context of "which month/row/period" means highest/maximum value, which is a statistical query.
+
+EXTRACTION RULES (GENERAL-PURPOSE - NO DOMAIN ASSUMPTIONS):
+- Extract targetVariable: Any entity/variable the user wants to analyze (extract from natural language, don't assume domain)
+- Extract variables array: Any related entities/variables mentioned
+- Extract chartType: If user explicitly requests a chart type
+- Extract filters (GENERAL constraint system):
+  * correlationSign: "positive" if user wants only positive relationships (any phrasing: "only positive", "don't include negative", "exclude negative", "no negative impact", etc.)
+  * correlationSign: "negative" if user wants only negative relationships
+  * excludeVariables: ANY variables user wants to exclude (extract from phrases like "don't include X", "exclude Y", "not Z", "don't want X", etc.)
+  * includeOnly: ANY variables user only wants to see (extract from "only show X", "just Y", "only X", etc.)
+  * exceptions: Variables to exclude from "all" (extract from "all except X", "everything but Y", etc.)
+  * minCorrelation/maxCorrelation: If user mentions correlation strength thresholds
+- Extract relationships (GENERAL - works for ANY domain):
+  * Primary entity: Extract from patterns like "X is my [entity]", "X is the [entity]", "X is [entity]" (entity can be brand, company, product, category, etc. - AI learns from context)
+  * Related entities: Extract from patterns like "Y, Z are [relationship] [entities]", "Y and Z are [relationship]" (relationship can be sister, competitor, category, etc. - AI learns from context)
+  * Relationship constraints: If user says "don't want [relationship] to have negative impact", extract:
+    - The relationship type (sister, competitor, category, etc.)
+    - The constraint (exclude negative correlations for those entities)
+    - Store in excludeVariables with constraint metadata
+- Extract constraints (GENERAL boolean logic):
+  * Conditional filters: "if X is negative", "where Y > threshold", "above average"
+  * Temporal filters: "last N months", "rolling average", "month-over-month"
+  * Grouping filters: Any grouping the user defines (learned from context, not hardcoded)
+- Extract axisMapping if user specifies axis assignments:
+  * x: Column for X-axis (time, date, category, etc.)
+  * y: Column for primary Y-axis (left axis)
+  * y2: Column for secondary Y-axis (right axis) - extract from phrases like "add X on secondary Y axis", "X on secondary Y axis", "secondary Y axis: X", "add X to secondary axis"
+- Set confidence: 0.9+ if clear intent, 0.7-0.9 if somewhat clear, <0.7 if ambiguous
+- Set requiresClarification: true if confidence < 0.5
+
+CRITICAL: Do NOT assume domain-specific terminology. Extract relationships and constraints GENERALLY. The AI should understand "X is my brand" and "X is my company" the same way - as defining a primary entity.
+
+OUTPUT FORMAT (JSON only, no markdown):
+{
+  "type": "correlation" | "chart" | "statistical" | "conversational" | "comparison" | "custom",
+  "confidence": 0.0-1.0,
+  "targetVariable": "column_name" | null,
+  "variables": ["col1", "col2"] | null,
+  "chartType": "line" | "bar" | "scatter" | "pie" | "area" | null,
+  "filters": {
+    "correlationSign": "positive" | "negative" | "all" | null,
+    "excludeVariables": ["col1"] | null,
+    "includeOnly": ["col2"] | null,
+    "exceptions": ["col3"] | null,
+    "minCorrelation": 0.5 | null,
+    "maxCorrelation": 0.9 | null
+  } | null,
+  "axisMapping": {
+    "x": "col1" | null,
+    "y": "col2" | null,
+    "y2": "col3" | null  // Secondary Y-axis (right axis) - extract from "add X on secondary Y axis", "X on secondary axis", etc.
+  } | null,
+  "customRequest": "original question" | null,
+  "requiresClarification": true | false
+}`;
+
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const model = getModelForTask('intent');
+      
+      const response = await openai.chat.completions.create({
+        model,
+        messages: [
+          {
+            role: 'system',
+            content: 'You are an intent classifier. Output only valid JSON. Be precise and extract all relevant information from the user query.',
+          },
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+        response_format: { type: 'json_object' },
+        temperature: 0.3, // Lower temperature for more consistent classification
+        max_tokens: 500,
+      });
+
+      const content = response.choices[0].message.content;
+      if (!content) {
+        throw new Error('Empty response from LLM');
+      }
+
+      // Parse JSON
+      let parsed: any;
+      try {
+        parsed = JSON.parse(content);
+      } catch (parseError) {
+        // Try to extract JSON from markdown code blocks
+        const jsonMatch = content.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/);
+        if (jsonMatch) {
+          parsed = JSON.parse(jsonMatch[1]);
+        } else {
+          throw parseError;
+        }
+      }
+
+      // Recursively remove ALL null values (Zod doesn't accept null for optional fields)
+      const cleaned = removeNulls(parsed);
+      
+      // Validate with Zod schema (cleaned should have no nulls)
+      if (!cleaned || typeof cleaned !== 'object') {
+        throw new Error('Cleaned parsed result is invalid');
+      }
+      
+      // Ensure required fields exist
+      if (!cleaned.type || typeof cleaned.confidence !== 'number') {
+        throw new Error('Missing required fields: type or confidence');
+      }
+      
+      console.log('🧹 Cleaned parsed result (removed nulls):', JSON.stringify(cleaned, null, 2));
+      
+      const validated = analysisIntentSchema.parse(cleaned);
+      
+      console.log(`✅ Intent classified: ${validated.type} (confidence: ${validated.confidence.toFixed(2)})`);
+      
+      return validated;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      console.warn(`⚠️ Intent classification attempt ${attempt + 1} failed:`, lastError.message);
+      
+      if (attempt < maxRetries - 1) {
+        // Enhance prompt for retry
+        console.log(`🔄 Retrying with enhanced prompt...`);
+        // Could add more context or examples here
+      }
+    }
+  }
+
+  // If all retries failed, return fallback intent
+  console.error('❌ Intent classification failed after retries, using fallback');
+  
+  // Determine fallback type based on question content
+  const questionLower = question.toLowerCase();
+  let fallbackType: AnalysisIntent['type'] = 'custom';
+  
+  if (questionLower.match(/\b(hi|hello|hey|thanks|thank you|bye)\b/)) {
+    fallbackType = 'conversational';
+  } else if (questionLower.match(/\b(what affects|correlation|relationship|influence)\b/)) {
+    fallbackType = 'correlation';
+  } else if (questionLower.match(/\b(chart|graph|plot|visualize|show)\b/)) {
+    fallbackType = 'chart';
+  }
+
+  return {
+    type: fallbackType,
+    confidence: 0.3, // Low confidence for fallback
+    requiresClarification: fallbackType !== 'conversational', // Don't ask for clarification on greetings
+    customRequest: question,
+  };
+}
+

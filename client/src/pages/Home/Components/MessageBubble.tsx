@@ -48,6 +48,17 @@ export function MessageBubble({
           </div>
         )}
 
+        {!isUser && message.content && (
+          <div
+            className="rounded-xl px-4 py-3 shadow-sm bg-white border border-gray-100"
+            data-testid={`message-content-${message.role}`}
+          >
+            <p className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap">
+              {message.content}
+            </p>
+          </div>
+        )}
+
         {!isUser && sampleRows && columns && sampleRows.length > 0 && (
           <div className="mt-3">
             <DataPreview 

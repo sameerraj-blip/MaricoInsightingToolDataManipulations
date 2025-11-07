@@ -100,14 +100,18 @@ export async function apiRequest<T = any>({
   config = {}
 }: ApiRequestOptions): Promise<T> {
   try {
+    console.log(`🌐 Making ${method} request to ${route}`);
     const response = await apiClient.request({
       method,
       url: route,
       data,
       ...config,
     });
+    console.log(`✅ ${method} ${route} - Status: ${response.status}`);
+    console.log('📦 Response data:', response.data);
     return response.data;
   } catch (error) {
+    console.error(`❌ ${method} ${route} failed:`, error);
     throw error; // Error is already handled by interceptor
   }
 }

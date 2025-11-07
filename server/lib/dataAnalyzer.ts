@@ -3,6 +3,7 @@ import { openai, MODEL } from './openai.js';
 import { processChartData } from './chartGenerator.js';
 import { analyzeCorrelations } from './correlationAnalyzer.js';
 import { generateChartInsights } from './insightGenerator.js';
+import { retrieveRelevantContext, retrieveSimilarPastQA, chunkData, generateChunkEmbeddings, clearVectorStore } from './ragService.js';
 
 export async function analyzeUpload(
   data: Record<string, any>[],
@@ -100,8 +101,79 @@ export async function answerQuestion(
   data: Record<string, any>[],
   question: string,
   chatHistory: Message[],
-  summary: DataSummary
+  summary: DataSummary,
+  sessionId?: string
 ): Promise<{ answer: string; charts?: ChartSpec[]; insights?: Insight[] }> {
+  // CRITICAL: This log should ALWAYS appear first
+  console.log('🚀 answerQuestion() CALLED with question:', question);
+  console.log('📋 SessionId:', sessionId);
+  console.log('📊 Data rows:', data?.length);
+  
+  // Try new agent system first
+  console.log('🔍 Attempting to use new agent system for query:', question);
+  try {
+    console.log('📦 Importing agent system...');
+    
+    // Use dynamic import with error handling for module initialization errors
+    let agentModule;
+    try {
+      agentModule = await import('./agents/index.js');
+    } catch (importError) {
+      console.error('❌ Failed to import agent module:', importError);
+      throw importError; // Re-throw to be caught by outer catch
+    }
+    
+    console.log('✅ Agent module imported, exports:', Object.keys(agentModule));
+    
+    const { getInitializedOrchestrator } = agentModule;
+    console.log('📞 Getting initialized orchestrator...');
+    
+    let orchestrator;
+    try {
+      orchestrator = getInitializedOrchestrator();
+    } catch (initError) {
+      console.error('❌ Failed to initialize orchestrator:', initError);
+      throw initError;
+    }
+    
+    console.log('✅ Orchestrator obtained');
+    
+    console.log('🤖 Using new agent system');
+    const result = await orchestrator.processQuery(
+      question,
+      chatHistory,
+      data,
+      summary,
+      sessionId || 'unknown'
+    );
+    
+    console.log('📤 Agent system result:', { 
+      hasAnswer: !!result?.answer, 
+      answerLength: result?.answer?.length,
+      hasCharts: !!result?.charts,
+      chartsCount: result?.charts?.length 
+    });
+    
+    // Ensure we have an answer
+    if (result && result.answer && result.answer.trim().length > 0) {
+      console.log('✅ Agent system returned response');
+      return result;
+    } else {
+      console.warn('⚠️ Agent system returned empty response, falling back');
+      console.warn('⚠️ Result:', JSON.stringify(result, null, 2));
+      throw new Error('Empty response from agent system');
+    }
+  } catch (agentError) {
+    console.error('❌ Agent system error, falling back to legacy system');
+    console.error('Error type:', agentError?.constructor?.name);
+    console.error('Error message:', agentError instanceof Error ? agentError.message : String(agentError));
+    if (agentError instanceof Error && agentError.stack) {
+      console.error('Stack trace (first 500 chars):', agentError.stack.substring(0, 500));
+    }
+    // Fall through to legacy implementation
+  }
+
+  // Legacy implementation (existing code)
   // Utility: parse two-series line intent like "A and B over months" or "A vs B"
   // This should be checked FIRST for "and" queries, before detectVsEarly
   const detectTwoSeriesLine = (q: string) => {
@@ -900,6 +972,12 @@ export async function answerQuestion(
     return result;
   };
 
+  // Detect filtering requests for correlations (positive/negative only)
+  const questionLower = question.toLowerCase();
+  const wantsOnlyPositive = /\b(only\s+positive|positive\s+only|just\s+positive|dont\s+include\s+negative|don't\s+include\s+negative|no\s+negative|exclude\s+negative|filter\s+positive|show\s+only\s+positive)\b/i.test(question);
+  const wantsOnlyNegative = /\b(only\s+negative|negative\s+only|just\s+negative|dont\s+include\s+positive|don't\s+include\s+positive|no\s+positive|exclude\s+positive|filter\s+negative|show\s+only\s+negative)\b/i.test(question);
+  const correlationFilter = wantsOnlyPositive ? 'positive' : wantsOnlyNegative ? 'negative' : 'all';
+
   // Classify the question
   const allColumns = summary.columns.map(c => c.name);
   const classification = await classifyQuestion(question, summary.numericColumns);
@@ -964,9 +1042,11 @@ export async function answerQuestion(
         const { charts, insights } = await analyzeCorrelations(
           data,
           yVar,
-          [xVar]
+          [xVar],
+          correlationFilter
         );
-        const answer = `I've analyzed the correlation between ${specificCol} and ${targetCol}. The scatter plot is oriented with X = ${xVar} and Y = ${yVar} as requested.`;
+        const filterNote = correlationFilter === 'positive' ? ' (showing only positive correlations)' : correlationFilter === 'negative' ? ' (showing only negative correlations)' : '';
+        const answer = `I've analyzed the correlation between ${specificCol} and ${targetCol}${filterNote}. The scatter plot is oriented with X = ${xVar} and Y = ${yVar} as requested.`;
         return { answer, charts, insights };
       } else if (targetIsNumeric && !specificIsNumeric) {
         // Categorical vs Numeric: Create bar chart
@@ -1019,7 +1099,8 @@ export async function answerQuestion(
       const { charts, insights } = await analyzeCorrelations(
         data,
         targetCol,
-        comparisonColumns
+        comparisonColumns,
+        correlationFilter
       );
 
       // Fallback: if for any reason charts came back without per-chart insights,
@@ -1039,14 +1120,19 @@ export async function answerQuestion(
         console.error('Fallback enrichment failed for chat correlation charts:', e);
       }
 
-      const answer = `I've analyzed what affects ${targetCol}. The correlation analysis shows the relationship strength between different variables and ${targetCol}. Scatter plots show the actual relationships, and the bar chart ranks variables by correlation strength.`;
+      const filterNote = correlationFilter === 'positive' 
+        ? ' I\'ve filtered to show only positive correlations as requested.' 
+        : correlationFilter === 'negative' 
+        ? ' I\'ve filtered to show only negative correlations as requested.' 
+        : '';
+      const answer = `I've analyzed what affects ${targetCol}.${filterNote} The correlation analysis shows the relationship strength between different variables and ${targetCol}. Scatter plots show the actual relationships, and the bar chart ranks variables by correlation strength.`;
 
       return { answer, charts: enrichedCharts, insights };
     }
   }
 
   // For general questions, generate answer and optional charts
-  return await generateGeneralAnswer(data, question, chatHistory, summary);
+  return await generateGeneralAnswer(data, question, chatHistory, summary, sessionId);
 }
 
 async function generateChartSpecs(summary: DataSummary): Promise<ChartSpec[]> {
@@ -1551,15 +1637,16 @@ Examples:
   }
 }
 
-async function generateGeneralAnswer(
+export async function generateGeneralAnswer(
   data: Record<string, any>[],
   question: string,
   chatHistory: Message[],
-  summary: DataSummary
+  summary: DataSummary,
+  sessionId?: string
 ): Promise<{ answer: string; charts?: ChartSpec[]; insights?: Insight[] }> {
-  // Detect explicit axis hints for any chart request
-  const parseExplicitAxes = (q: string): { x?: string; y?: string } => {
-    const result: { x?: string; y?: string } = {};
+  // Detect explicit axis hints for any chart request (including secondary Y-axis)
+  const parseExplicitAxes = (q: string): { x?: string; y?: string; y2?: string } => {
+    const result: { x?: string; y?: string; y2?: string } = {};
     const axisRegex = /(.*?)\(([^\)]*)\)/g;
     let m: RegExpExecArray | null;
     while ((m = axisRegex.exec(q)) !== null) {
@@ -1577,13 +1664,128 @@ async function generateGeneralAnswer(
     if (xMatch && !result.x) result.x = xMatch[1].trim();
     const yMatch = lower.match(/y\s*-?\s*axis\s*[:=]\s*([^,;\n]+)/);
     if (yMatch && !result.y) result.y = yMatch[1].trim();
+    
+    // Detect "add X on secondary Y axis" or "X on secondary Y axis" pattern
+    // Handle variations: "add PA nGRP on secondary Y axis", "PA nGRP on secondary Y axis please"
+    const secondaryYMatch = lower.match(/(?:add\s+)?(.+?)\s+on\s+(?:the\s+)?secondary\s+y\s*axis(?:\s+please)?/i);
+    if (secondaryYMatch) {
+      let y2Var = secondaryYMatch[1].trim();
+      // Remove trailing "please" or other common words
+      y2Var = y2Var.replace(/\s+(please|now|then)$/i, '').trim();
+      result.y2 = y2Var;
+      console.log('✅ Detected secondary Y-axis request:', result.y2);
+    }
+    
+    // Also check for "secondary Y axis: X" pattern
+    const secondaryYColonMatch = lower.match(/secondary\s+y\s*axis\s*[:=]\s*([^,;\n]+)/);
+    if (secondaryYColonMatch && !result.y2) {
+      result.y2 = secondaryYColonMatch[1].trim();
+      console.log('✅ Detected secondary Y-axis (colon format):', result.y2);
+    }
+    
     return result;
   };
 
-  const { x: explicitXRaw, y: explicitYRaw } = parseExplicitAxes(question);
+  const { x: explicitXRaw, y: explicitYRaw, y2: explicitY2Raw } = parseExplicitAxes(question);
   const availableColumns = summary.columns.map(c => c.name);
   const explicitX = explicitXRaw ? findMatchingColumn(explicitXRaw, availableColumns) : null;
   const explicitY = explicitYRaw ? findMatchingColumn(explicitYRaw, availableColumns) : null;
+  const explicitY2 = explicitY2Raw ? findMatchingColumn(explicitY2Raw, availableColumns) : null;
+  
+  console.log('📊 Parsed explicit axes:', { x: explicitX, y: explicitY, y2: explicitY2 });
+  
+  // If secondary Y-axis is requested, try to find the previous chart from chat history
+  if (explicitY2) {
+    console.log('🔍 Secondary Y-axis detected, looking for previous chart in chat history...');
+    
+    // Look for the most recent chart in chat history
+    let previousChart: ChartSpec | null = null;
+    for (let i = chatHistory.length - 1; i >= 0; i--) {
+      const msg = chatHistory[i];
+      if (msg.role === 'assistant' && msg.charts && msg.charts.length > 0) {
+        // Find a line chart (most likely to have dual-axis)
+        previousChart = msg.charts.find(c => c.type === 'line') || msg.charts[0];
+        if (previousChart) {
+          console.log('✅ Found previous chart:', previousChart.title);
+          break;
+        }
+      }
+    }
+    
+    // If we found a previous chart, add the secondary Y-axis to it
+    if (previousChart && previousChart.type === 'line') {
+      console.log('🔄 Adding secondary Y-axis to existing chart...');
+      
+      // Create updated chart spec with y2
+      const updatedChart: ChartSpec = {
+        ...previousChart,
+        y2: explicitY2,
+        y2Label: explicitY2,
+        title: previousChart.title?.replace(/over.*$/i, '') || `${previousChart.y} and ${explicitY2} Trends`,
+      };
+      
+      // Process the data
+      const chartData = processChartData(data, updatedChart);
+      console.log(`✅ Dual-axis line data: ${chartData.length} points`);
+      
+      if (chartData.length === 0) {
+        return { answer: `No valid data points found. Please check that column "${explicitY2}" exists and contains numeric data.` };
+      }
+      
+      const insights = await generateChartInsights(updatedChart, chartData, summary);
+      
+      return {
+        answer: `I've added ${explicitY2} on the secondary Y-axis. The chart now shows ${previousChart.y} on the left axis and ${explicitY2} on the right axis.`,
+        charts: [{
+          ...updatedChart,
+          data: chartData,
+          keyInsight: insights.keyInsight,
+          recommendation: insights.recommendation,
+        }],
+      };
+    }
+    
+    // If no previous chart found, but we have explicitY2, try to create a new dual-axis chart
+    // We need to infer the primary Y-axis and X-axis
+    if (!previousChart && explicitY2) {
+      console.log('⚠️ No previous chart found, trying to create new dual-axis chart...');
+      
+      // Try to find the primary Y-axis from the question or use the first numeric column
+      const primaryY = explicitY || summary.numericColumns[0];
+      const xAxis = summary.dateColumns[0] || 
+                    findMatchingColumn('Month', availableColumns) || 
+                    findMatchingColumn('Date', availableColumns) ||
+                    availableColumns[0];
+      
+      if (primaryY && explicitY2 && xAxis) {
+        const dualAxisSpec: ChartSpec = {
+          type: 'line',
+          title: `${primaryY} and ${explicitY2} Trends Over Time`,
+          x: xAxis,
+          y: primaryY,
+          y2: explicitY2,
+          xLabel: xAxis,
+          yLabel: primaryY,
+          y2Label: explicitY2,
+          aggregate: 'none',
+        };
+        
+        const chartData = processChartData(data, dualAxisSpec);
+        if (chartData.length > 0) {
+          const insights = await generateChartInsights(dualAxisSpec, chartData, summary);
+          return {
+            answer: `I've created a line chart with ${primaryY} on the left axis and ${explicitY2} on the right axis.`,
+            charts: [{
+              ...dualAxisSpec,
+              data: chartData,
+              keyInsight: insights.keyInsight,
+              recommendation: insights.recommendation,
+            }],
+          };
+        }
+      }
+    }
+  }
 
   // Detect "vs" queries for two numeric variables - generate both scatter and line charts
   const detectVsQuery = (q: string): { var1: string | null; var2: string | null } | null => {
@@ -1843,23 +2045,186 @@ async function generateGeneralAnswer(
     return { answer, charts };
   }
 
-  const historyContext = chatHistory
-    .slice(-4)
+  // Use more messages for better context (last 15 messages)
+  // Filter out messages that are too long to avoid token limits
+  const recentHistory = chatHistory
+    .slice(-15)
+    .filter(msg => msg.content && msg.content.length < 500) // Filter very long messages
     .map((msg) => `${msg.role}: ${msg.content}`)
     .join('\n');
+  
+  const historyContext = recentHistory;
 
-  const prompt = `Answer this question about the data:
+  // STEP 1: Detect conversational queries FIRST (before expensive RAG calls)
+  // This handles greetings, casual chat, and non-data questions
+  const questionLower = question.trim().toLowerCase();
+  
+  // Expanded conversational patterns - handle phrases, not just single words
+  const conversationalPatterns = [
+    // Greetings
+    /^(hi|hello|hey|hiya|howdy|greetings|sup|what's up|whats up|wassup)$/i,
+    /^(hi|hello|hey)\s+(there|you|everyone|all)$/i,
+    /^how\s+(are\s+you|you\s+doing|is\s+it\s+going|things\s+going)/i,
+    /^what's?\s+(up|new|good|happening)/i,
+    /^how\s+(do\s+you\s+do|goes\s+it)/i,
+    
+    // Thanks
+    /^(thanks?|thank\s+you|thx|ty|appreciate\s+it|much\s+appreciated)/i,
+    /^(thanks?|thank\s+you)\s+(so\s+much|a\s+lot|very\s+much|tons)/i,
+    
+    // Casual responses
+    /^(ok|okay|sure|yep|yeah|yup|alright|all\s+right|got\s+it|understood|perfect|great|awesome|cool|nice|good|sounds\s+good|sounds\s+great)$/i,
+    /^(yes|no|nope|nah)\s*$/i,
+    
+    // Farewells
+    /^(bye|goodbye|see\s+ya|see\s+you|later|talk\s+to\s+you\s+later|catch\s+you\s+later|gotta\s+go)/i,
+    /^(have\s+a\s+good|have\s+a\s+nice)\s+(day|one|weekend)/i,
+    
+    // Politeness
+    /^(please|pls|plz)$/i,
+    /^(sorry|my\s+bad|oops|whoops)/i,
+    
+    // Questions about the bot
+    /^(who\s+are\s+you|what\s+are\s+you|what\s+can\s+you\s+do|what\s+do\s+you\s+do)/i,
+    /^(help|what\s+can\s+you\s+help|how\s+can\s+you\s+help)/i,
+  ];
+  
+  const isPureConversation = conversationalPatterns.some(pattern => pattern.test(questionLower));
+  
+  // Handle pure conversational queries IMMEDIATELY (before RAG)
+  if (isPureConversation) {
+    // Use AI for more natural, context-aware responses to conversational queries
+    // This makes it feel like a real conversation, not a script
+    try {
+      const conversationalPrompt = `You are a friendly, helpful data analyst assistant. The user just said: "${question}"
 
-QUESTION: ${question}
+${historyContext ? `CONVERSATION HISTORY:\n${historyContext}\n\nUse this to respond naturally and contextually.` : ''}
+
+Respond naturally and conversationally. Be warm, friendly, and engaging. If they're greeting you, greet them back enthusiastically. If they're thanking you, acknowledge it warmly. If they're asking what you can do, briefly explain you help with data analysis.
+
+Keep it SHORT (1-2 sentences max) and natural. Don't be robotic. Use emojis sparingly (1 max).
+
+Just respond conversationally - no data analysis needed here.`;
+
+      const response = await openai.chat.completions.create({
+        model: MODEL as string,
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a friendly, conversational data analyst assistant. Respond naturally and warmly to casual conversation. Keep responses brief and engaging.',
+          },
+          {
+            role: 'user',
+            content: conversationalPrompt,
+          },
+        ],
+        temperature: 0.9, // Higher temperature for more natural, varied responses
+        max_tokens: 100, // Short responses for casual chat
+      });
+
+      const answer = response.choices[0].message.content?.trim() || "Hi! I'm here to help you explore your data. What would you like to know?";
+      return { answer };
+    } catch (error) {
+      console.error('Conversational response error, using fallback:', error);
+      // Fallback responses
+      const fallbackResponses: Record<string, string> = {
+        'hi': "Hi there! 👋 I'm here to help you explore your data. What would you like to know?",
+        'hello': "Hello! 👋 Ready to dive into your data? Ask me anything!",
+        'hey': "Hey! 👋 What can I help you discover in your data today?",
+        'how are you': "I'm doing great, thanks for asking! Ready to help you analyze your data. What would you like to explore?",
+        'what\'s up': "Not much! Just here waiting to help you with your data analysis. What can I show you?",
+        'thanks': "You're welcome! Happy to help. Anything else you'd like to explore?",
+        'thank you': "You're very welcome! Feel free to ask if you need anything else.",
+      };
+      
+      const response = fallbackResponses[questionLower] || "I'm here to help! What would you like to know about your data?";
+      return { answer: response };
+    }
+  }
+
+  // STEP 2: RAG retrieval (only for data-related questions)
+  let retrievedContext: string = '';
+  if (sessionId) {
+    try {
+      const relevantChunks = await retrieveRelevantContext(
+        question,
+        data,
+        summary,
+        chatHistory,
+        sessionId,
+        5 // Top 5 most relevant chunks
+      );
+      
+      // Also retrieve similar past Q&A
+      const similarQA = await retrieveSimilarPastQA(question, chatHistory, 2);
+      
+      if (relevantChunks.length > 0 || similarQA.length > 0) {
+        retrievedContext = '\n\nRETRIEVED RELEVANT DATA CONTEXT:\n';
+        
+        if (relevantChunks.length > 0) {
+          retrievedContext += 'Relevant data patterns and information:\n';
+          relevantChunks.forEach((chunk, idx) => {
+            retrievedContext += `${idx + 1}. [${chunk.type}] ${chunk.content}\n`;
+          });
+        }
+        
+        if (similarQA.length > 0) {
+          retrievedContext += '\nSimilar past questions and answers:\n';
+          similarQA.forEach((qa, idx) => {
+            retrievedContext += `${idx + 1}. ${qa.content}\n`;
+          });
+        }
+      }
+    } catch (error) {
+      console.error('RAG retrieval error (continuing without RAG):', error);
+      // Continue without RAG if there's an error
+    }
+  }
+  
+  // Extract key topics and entities from conversation history for better context
+  const conversationTopics = chatHistory
+    .slice(-10)
+    .map(msg => msg.content)
+    .join(' ')
+    .toLowerCase();
+  
+  // Extract mentioned columns/variables from history
+  const mentionedColumns = summary.columns
+    .map(c => c.name)
+    .filter(col => conversationTopics.includes(col.toLowerCase()));
+  
+  const prompt = `You are a friendly, conversational data analyst assistant. You're having a natural, flowing conversation with the user about their data. Be warm, helpful, and engaging - like talking to a colleague over coffee.
+
+CURRENT QUESTION: ${question}
+
+${historyContext ? `CONVERSATION HISTORY:\n${historyContext}\n\nIMPORTANT - Use this history to:
+- Understand context and references (when user says "that", "it", "the chart", "the previous one", "the last thing", etc.)
+- Remember what columns/variables were discussed: ${mentionedColumns.length > 0 ? mentionedColumns.join(', ') : 'none yet'}
+- Maintain conversation flow and continuity - respond naturally to follow-ups
+- Reference previous answers naturally ("As I mentioned before...", "Building on what we discussed...")
+- Show you remember what was discussed before
+- If they're asking a follow-up, acknowledge it naturally ("Sure!", "Absolutely!", "Let me show you that...")
+- Match their tone - if they're casual, be casual; if they're formal, be professional` : ''}
 
 DATA CONTEXT:
 - ${summary.rowCount} rows, ${summary.columnCount} columns
 - All columns: ${summary.columns.map((c) => `${c.name} (${c.type})`).join(', ')}
 - Numeric columns: ${summary.numericColumns.join(', ')}
+${retrievedContext}
 
-${historyContext ? `CHAT HISTORY:\n${historyContext}\n` : ''}
+CONVERSATION STYLE - CRITICAL:
+- Be NATURALLY conversational - like you're talking to a friend, not a robot
+- Use contractions: "I've", "you're", "that's", "it's" - makes it feel human
+- Vary your responses - don't use the same phrases repeatedly
+- Show personality: be enthusiastic, helpful, and genuinely interested
+- Reference previous parts naturally: "As we saw earlier...", "Remember when we looked at...", "Building on that..."
+- If they ask a follow-up, acknowledge it: "Sure!", "Absolutely!", "Great question!", "Let me show you..."
+- Use natural transitions: "So...", "Now...", "Here's the thing...", "Actually..."
+- Ask clarifying questions if needed: "Are you looking for...?", "Do you mean...?"
+- Match their energy - if they're excited, be excited; if they're casual, be casual
+- Don't be overly formal - use everyday language
 
-Provide a specific, helpful answer. If the question requests a chart, generate appropriate chart specifications.
+If the question requests a chart or visualization, generate appropriate chart specifications. Otherwise, provide a helpful, conversational answer.
 
 CHART GUIDELINES:
 - You can use ANY column (categorical or numeric) for x or y
@@ -1875,9 +2240,14 @@ CRITICAL FOR CORRELATION CHARTS:
 - Do NOT convert negative correlations to positive or vice versa
 - Correlation values must preserve their original sign
 
+CONVERSATION MEMORY:
+${mentionedColumns.length > 0 ? `- Previously discussed columns: ${mentionedColumns.join(', ')}` : ''}
+- Remember user's interests and preferences from the conversation
+- If user asks about something mentioned before, show you remember
+
 Output JSON:
 {
-  "answer": "your detailed answer",
+  "answer": "your detailed, conversational answer that references previous topics when relevant",
   "charts": [{"type": "...", "title": "...", "x": "...", "y": "...", "aggregate": "..."}] or null,
   "generateInsights": true or false
 }`;
@@ -1887,7 +2257,24 @@ Output JSON:
     messages: [
       {
         role: 'system',
-        content: 'You are a helpful data analyst assistant. Provide specific, accurate answers. Column names (x, y) must be strings, not arrays. CRITICAL: Never modify correlation values - preserve their original positive/negative signs.',
+        content: `You are a friendly, conversational data analyst assistant. You're having a natural, flowing conversation with the user about their data.
+        
+CRITICAL CONVERSATION RULES:
+- Be NATURALLY conversational - like talking to a friend, not a robot
+- Use contractions and everyday language: "I've", "you're", "that's", "it's", "here's"
+- Vary your responses - don't repeat the same phrases
+- Show personality: be enthusiastic, helpful, genuinely interested
+- Reference previous conversation naturally: "As we saw...", "Remember when...", "Building on that..."
+- Acknowledge follow-ups warmly: "Sure!", "Absolutely!", "Great question!", "Let me show you..."
+- Use natural transitions: "So...", "Now...", "Here's the thing...", "Actually..."
+- Match their tone - casual or formal, match it
+- Ask clarifying questions when needed: "Are you looking for...?", "Do you mean...?"
+- Don't be overly formal - use everyday, natural language
+
+TECHNICAL RULES:
+- Column names (x, y) must be strings, not arrays
+- Never modify correlation values - preserve their original positive/negative signs
+- If the user is just chatting, respond naturally without forcing charts`,
       },
       {
         role: 'user',
@@ -1895,8 +2282,8 @@ Output JSON:
       },
     ],
     response_format: { type: 'json_object' },
-    temperature: 0.7,
-    max_tokens: 800,
+    temperature: 0.85, // Higher temperature for more natural, varied, human-like responses
+    max_tokens: 1200, // Increased for more detailed conversational responses
   });
 
   const content = response.choices[0].message.content || '{"answer": "I cannot answer that question."}';

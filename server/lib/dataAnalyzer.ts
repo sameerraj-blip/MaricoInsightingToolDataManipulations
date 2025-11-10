@@ -1427,12 +1427,20 @@ Output format: [{"type": "...", "title": "...", "x": "...", "y": "...", "aggrega
         }
       }
       
+      // Sanitize aggregate field to only allow valid enum values
+      let aggregate = spec.aggregate || 'none';
+      const validAggregates = ['sum', 'mean', 'count', 'none'];
+      if (!validAggregates.includes(aggregate)) {
+        console.warn(`⚠️ Invalid aggregate value "${aggregate}", defaulting to "none"`);
+        aggregate = 'none';
+      }
+
       return {
         type: spec.type,
         title: spec.title || 'Untitled Chart',
         x: x,
         y: y,
-        aggregate: spec.aggregate || 'none',
+        aggregate: aggregate,
       };
     }).filter((spec: any) => 
       spec && // Remove null entries (filtered pie charts)
@@ -2511,6 +2519,16 @@ export async function generateGeneralAnswer(
     .join('\n');
   
   const historyContext = recentHistory;
+  
+  // If we have a parsed query with aggregations, extract the aggregation column names for the AI
+  let aggregationColumnHints = '';
+  if (parsedQuery && parsedQuery.aggregations && parsedQuery.aggregations.length > 0) {
+    const aggColumns = parsedQuery.aggregations.map(agg => {
+      const columnName = agg.alias || `${agg.column}_${agg.operation}`;
+      return `- ${columnName} (from ${agg.operation}(${agg.column}))`;
+    });
+    aggregationColumnHints = `\n\nIMPORTANT - Aggregated columns created from your query:\n${aggColumns.join('\n')}\nWhen creating charts, use these column names for the Y-axis, NOT the original column names.`;
+  }
 
   // STEP 1: Detect conversational queries FIRST (before expensive RAG calls)
   // This handles greetings, casual chat, and non-data questions
@@ -2665,8 +2683,9 @@ ${historyContext ? `CONVERSATION HISTORY:\n${historyContext}\n\nIMPORTANT - Use 
 
 DATA CONTEXT:
 - ${summary.rowCount} rows, ${summary.columnCount} columns
-- All columns: ${summary.columns.map((c) => `${c.name} (${c.type})`).join(', ')}
-- Numeric columns: ${summary.numericColumns.join(', ')}
+- All columns: ${summary.columns.map((c) => `${c.name} (${c.type})`).join(', ')}${parsedQuery && parsedQuery.aggregations && parsedQuery.aggregations.length > 0 ? ', ' + parsedQuery.aggregations.map(agg => agg.alias || `${agg.column}_${agg.operation}`).join(', ') : ''}
+- Numeric columns: ${summary.numericColumns.join(', ')}${parsedQuery && parsedQuery.aggregations && parsedQuery.aggregations.length > 0 ? ', ' + parsedQuery.aggregations.map(agg => agg.alias || `${agg.column}_${agg.operation}`).join(', ') : ''}
+${aggregationColumnHints}
 ${retrievedContext}
 
 CONVERSATION STYLE - CRITICAL:
@@ -2765,12 +2784,20 @@ TECHNICAL RULES:
         const finalX = explicitX || String(x || '');
         const finalY = explicitY || String(y || '');
 
+        // Sanitize aggregate field to only allow valid enum values
+        let aggregate = spec.aggregate || 'none';
+        const validAggregates = ['sum', 'mean', 'count', 'none'];
+        if (!validAggregates.includes(aggregate)) {
+          console.warn(`⚠️ Invalid aggregate value "${aggregate}", defaulting to "none"`);
+          aggregate = 'none';
+        }
+
         return {
           type: spec.type,
           title: spec.title || 'Chart',
           x: finalX,
           y: finalY,
-          aggregate: spec.aggregate || 'none',
+          aggregate: aggregate,
         };
       }).filter((spec: any) => 
         spec.type && spec.x && spec.y &&
@@ -2778,7 +2805,77 @@ TECHNICAL RULES:
       );
 
       processedCharts = await Promise.all(sanitized.map(async (spec: ChartSpec) => {
+        console.log(`🔍 Processing chart: "${spec.title}"`);
+        console.log(`   Original spec: x="${spec.x}", y="${spec.y}", aggregate="${spec.aggregate}"`);
+        console.log(`   Working data rows: ${workingData.length}`);
+        
+        // If we have aggregations in the parsed query, try to match the y-axis to aggregated columns
+        if (parsedQuery && parsedQuery.aggregations && parsedQuery.aggregations.length > 0 && workingData.length > 0) {
+          const availableColumns = Object.keys(workingData[0]);
+          console.log(`   Available columns after aggregation: [${availableColumns.join(', ')}]`);
+          
+          // Check if the y-axis column exists in the data (exact match or case-insensitive)
+          const yColumnExists = availableColumns.some(col => 
+            col === spec.y || col.toLowerCase() === spec.y.toLowerCase()
+          );
+          
+          console.log(`   Y-axis column "${spec.y}" exists: ${yColumnExists}`);
+          
+          // If y-axis column doesn't exist, try to find the aggregated column
+          if (!yColumnExists) {
+            console.log(`   Looking for aggregated column matching "${spec.y}"...`);
+            let foundMatch = false;
+            
+            // Look for aggregated columns that match the original column name
+            for (const agg of parsedQuery.aggregations) {
+              const aggColumnName = agg.alias || `${agg.column}_${agg.operation}`;
+              console.log(`   Checking aggregation: ${agg.column} -> ${aggColumnName}`);
+              
+              if (availableColumns.includes(aggColumnName)) {
+                // Check if the original column name matches spec.y
+                const columnMatches = agg.column.toLowerCase() === spec.y.toLowerCase() || 
+                    spec.y.toLowerCase().includes(agg.column.toLowerCase()) ||
+                    agg.column.toLowerCase().includes(spec.y.toLowerCase());
+                
+                if (columnMatches) {
+                  console.log(`   ✅ Match found! Updating chart y-axis from "${spec.y}" to "${aggColumnName}"`);
+                  spec.y = aggColumnName;
+                  spec.yLabel = aggColumnName;
+                  foundMatch = true;
+                  break;
+                }
+              }
+            }
+            
+            // If no match found, try to use the first aggregated column as fallback
+            if (!foundMatch && availableColumns.length > 0) {
+              // Find the first aggregated column (not in groupBy)
+              const groupByColumns = new Set(parsedQuery.groupBy || []);
+              const aggregatedCol = availableColumns.find(col => 
+                !groupByColumns.has(col) && 
+                parsedQuery.aggregations!.some(agg => {
+                  const aggName = agg.alias || `${agg.column}_${agg.operation}`;
+                  return col === aggName;
+                })
+              );
+              
+              if (aggregatedCol) {
+                console.log(`   ⚠️ No exact match found, using first aggregated column as fallback: "${aggregatedCol}"`);
+                spec.y = aggregatedCol;
+                spec.yLabel = aggregatedCol;
+              } else {
+                console.warn(`   ❌ Could not find any aggregated column to use for y-axis`);
+              }
+            }
+          }
+        } else if (workingData.length === 0) {
+          console.warn(`   ⚠️ No data available - chart will be empty`);
+          console.warn(`   This might mean the filter removed all rows or aggregation failed`);
+        }
+        
+        console.log(`   Final chart spec: x="${spec.x}", y="${spec.y}"`);
         const processedData = processChartData(workingData, spec);
+        console.log(`   Processed data rows: ${processedData.length}`);
         const chartInsights = await generateChartInsights(spec, processedData, summary);
         
         return {

@@ -158,22 +158,31 @@ function applyTimeFilter(
 }
 
 function applyValueFilter(data: Record<string, any>[], filter: ValueFilter): { data: Record<string, any>[]; description?: string } {
+  // Calculate reference value once if needed (for mean, median, etc.)
+  let referenceVal: number | null = null;
+  if (filter.reference) {
+    referenceVal = referenceValue(data[0] || {}, filter, data);
+  }
+  
   const result = data.filter((row) => {
     const value = toNumber(row[filter.column]);
     if (isNaN(value)) return false;
+    
+    const compareValue: number | null = filter.reference && referenceVal !== null ? referenceVal : (filter.value ?? null);
+    
     switch (filter.operator) {
       case '>':
-        return filter.reference ? value > referenceValue(row, filter) : value > (filter.value ?? Number.MIN_VALUE);
+        return compareValue !== null ? value > compareValue : value > Number.MIN_VALUE;
       case '>=':
-        return filter.reference ? value >= referenceValue(row, filter) : value >= (filter.value ?? Number.MIN_VALUE);
+        return compareValue !== null ? value >= compareValue : value >= Number.MIN_VALUE;
       case '<':
-        return filter.reference ? value < referenceValue(row, filter) : value < (filter.value ?? Number.MAX_VALUE);
+        return compareValue !== null ? value < compareValue : value < Number.MAX_VALUE;
       case '<=':
-        return filter.reference ? value <= referenceValue(row, filter) : value <= (filter.value ?? Number.MAX_VALUE);
+        return compareValue !== null ? value <= compareValue : value <= Number.MAX_VALUE;
       case '=':
-        return filter.reference ? value === referenceValue(row, filter) : value === filter.value;
+        return compareValue !== null ? value === compareValue : false;
       case '!=':
-        return filter.reference ? value !== referenceValue(row, filter) : value !== filter.value;
+        return compareValue !== null ? value !== compareValue : true;
       case 'between':
         if (filter.reference) return true;
         if (filter.value === undefined || filter.value2 === undefined) return true;
@@ -186,6 +195,19 @@ function applyValueFilter(data: Record<string, any>[], filter: ValueFilter): { d
   });
 
   let description: string | undefined;
+  // Reuse referenceVal calculated above (or calculate if not already calculated)
+  if (filter.reference && referenceVal === null) {
+    referenceVal = referenceValue(data[0] || {}, filter, data);
+  }
+  const displayValue = filter.reference ? `${filter.reference} (${referenceVal?.toFixed(2) || 'N/A'})` : filter.value;
+  
+  console.log(`   Filter result: ${result.length} rows passed filter (from ${data.length} total)`);
+  if (result.length === 0 && data.length > 0) {
+    console.warn(`⚠️ Filter removed ALL rows! This might indicate the filter condition is too strict.`);
+    console.warn(`   Filter: ${filter.column} ${filter.operator} ${displayValue}`);
+    console.warn(`   Sample values from first 5 rows:`, data.slice(0, 5).map(r => ({ [filter.column]: r[filter.column] })));
+  }
+  
   switch (filter.operator) {
     case '>':
     case '>=':
@@ -193,7 +215,7 @@ function applyValueFilter(data: Record<string, any>[], filter: ValueFilter): { d
     case '<=':
     case '!=':
     case '=':
-      description = `${filter.column} ${filter.operator} ${filter.reference || filter.value}`;
+      description = `${filter.column} ${filter.operator} ${displayValue}`;
       break;
     case 'between':
       description = `${filter.column} between ${filter.value} and ${filter.value2}`;
@@ -203,9 +225,52 @@ function applyValueFilter(data: Record<string, any>[], filter: ValueFilter): { d
   return { data: result, description };
 }
 
-function referenceValue(row: Record<string, any>, filter: ValueFilter): number {
-  // Reference-based comparisons rely on precomputed stats; require future extension
-  // For now, fallback to provided values
+function referenceValue(
+  row: Record<string, any>, 
+  filter: ValueFilter, 
+  allData?: Record<string, any>[]
+): number {
+  // If we have allData, calculate statistics from it
+  if (allData && filter.reference) {
+    const values = allData
+      .map((r) => toNumber(r[filter.column]))
+      .filter((v) => !isNaN(v));
+    
+    if (values.length === 0) {
+      return filter.value ?? 0;
+    }
+    
+    switch (filter.reference) {
+      case 'mean':
+      case 'avg':
+        return values.reduce((sum, val) => sum + val, 0) / values.length;
+      case 'median': {
+        const sorted = [...values].sort((a, b) => a - b);
+        const mid = Math.floor(sorted.length / 2);
+        return sorted.length % 2 === 0
+          ? (sorted[mid - 1] + sorted[mid]) / 2
+          : sorted[mid];
+      }
+      case 'min':
+        return Math.min(...values);
+      case 'max':
+        return Math.max(...values);
+      case 'p25': {
+        const sorted = [...values].sort((a, b) => a - b);
+        const idx = Math.floor(sorted.length * 0.25);
+        return sorted[idx] ?? sorted[0] ?? 0;
+      }
+      case 'p75': {
+        const sorted = [...values].sort((a, b) => a - b);
+        const idx = Math.floor(sorted.length * 0.75);
+        return sorted[idx] ?? sorted[sorted.length - 1] ?? 0;
+      }
+      default:
+        return filter.value ?? toNumber(row[filter.column]);
+    }
+  }
+  
+  // Fallback to provided value or row value
   return filter.value ?? toNumber(row[filter.column]);
 }
 
@@ -270,50 +335,167 @@ function applyAggregations(
     groups.get(key)!.push(row);
   }
 
-  const aggregatedRows: Record<string, any>[] = [];
-  for (const [key, rows] of groups.entries()) {
-    const base: Record<string, any> = {};
-    const keyParts = key.split('||');
-    groupBy.forEach((col, idx) => {
-      base[col] = keyParts[idx];
-    });
+  // For percent_change, we need to calculate across groups, so handle it separately
+  const hasPercentChange = aggregations.some(agg => (agg.operation as string) === 'percent_change');
+  
+  let aggregatedRows: Record<string, any>[] = [];
+  
+  if (hasPercentChange && groupBy.length === 1) {
+    // For percent_change, we need to sort by the groupBy column and calculate changes
+    // First, create regular aggregated rows
+    for (const [key, rows] of Array.from(groups.entries())) {
+      const base: Record<string, any> = {};
+      const keyParts = key.split('||');
+      groupBy.forEach((col, idx) => {
+        base[col] = keyParts[idx];
+      });
 
-    for (const agg of aggregations) {
-      const values = rows.map((r) => toNumber(r[agg.column])).filter((v) => !isNaN(v));
-      let resultValue: number | null = null;
-      switch (agg.operation) {
-        case 'sum':
-          resultValue = values.reduce((sum, val) => sum + val, 0);
-          break;
-        case 'mean':
-        case 'avg':
-          resultValue = values.reduce((sum, val) => sum + val, 0) / (values.length || 1);
-          break;
-        case 'count':
-          resultValue = values.length;
-          break;
-        case 'min':
-          resultValue = values.length ? Math.min(...values) : null;
-          break;
-        case 'max':
-          resultValue = values.length ? Math.max(...values) : null;
-          break;
-        case 'median':
-          if (values.length) {
-            const sortedVals = [...values].sort((a, b) => a - b);
-            const mid = Math.floor(sortedVals.length / 2);
-            resultValue =
-              sortedVals.length % 2 === 0
-                ? (sortedVals[mid - 1] + sortedVals[mid]) / 2
-                : sortedVals[mid];
-          }
-          break;
+      for (const agg of aggregations) {
+        if ((agg.operation as string) === 'percent_change') {
+          // Skip percent_change for now, will calculate after sorting
+          continue;
+        }
+        const values = rows.map((r: Record<string, any>) => toNumber(r[agg.column])).filter((v: number) => !isNaN(v));
+        let resultValue: number | null = null;
+        switch (agg.operation) {
+          case 'sum':
+            resultValue = values.reduce((sum, val) => sum + val, 0);
+            break;
+          case 'mean':
+          case 'avg':
+            resultValue = values.reduce((sum, val) => sum + val, 0) / (values.length || 1);
+            break;
+          case 'count':
+            resultValue = values.length;
+            break;
+          case 'min':
+            resultValue = values.length ? Math.min(...values) : null;
+            break;
+          case 'max':
+            resultValue = values.length ? Math.max(...values) : null;
+            break;
+          case 'median':
+            if (values.length) {
+              const sortedVals = [...values].sort((a, b) => a - b);
+              const mid = Math.floor(sortedVals.length / 2);
+              resultValue =
+                sortedVals.length % 2 === 0
+                  ? (sortedVals[mid - 1] + sortedVals[mid]) / 2
+                  : sortedVals[mid];
+            }
+            break;
+        }
+        const targetName = agg.alias || `${agg.column}_${agg.operation}`;
+        base[targetName] = resultValue;
       }
-      const targetName = agg.alias || `${agg.column}_${agg.operation}`;
-      base[targetName] = resultValue;
-    }
 
-    aggregatedRows.push(base);
+      aggregatedRows.push(base);
+    }
+    
+    // Sort by groupBy column for percent_change calculation
+    const groupByCol = groupBy[0];
+    aggregatedRows.sort((a, b) => {
+      const aVal = a[groupByCol];
+      const bVal = b[groupByCol];
+      // Try to parse as date if possible
+      const aDate = parseDate(aVal);
+      const bDate = parseDate(bVal);
+      if (aDate && bDate) {
+        return aDate.getTime() - bDate.getTime();
+      }
+      // Fallback to string comparison
+      return String(aVal).localeCompare(String(bVal));
+    });
+    
+    // Now calculate percent_change for each aggregation
+    for (const agg of aggregations) {
+      if ((agg.operation as string) === 'percent_change') {
+        const targetName = agg.alias || `${agg.column}_${agg.operation}`;
+        
+        for (let i = 0; i < aggregatedRows.length; i++) {
+          const currentRow = aggregatedRows[i];
+          const previousRow = i > 0 ? aggregatedRows[i - 1] : null;
+          
+          // Get the current value (might need to aggregate first if not already aggregated)
+          let currentValue: number | null = null;
+          if (previousRow) {
+            // Get the original value from the current group
+            const currentGroupKey = groupBy.map(col => currentRow[col]).join('||');
+            const currentGroupRows = groups.get(currentGroupKey) || [];
+            const currentValues = currentGroupRows.map((r: Record<string, any>) => toNumber(r[agg.column])).filter((v: number) => !isNaN(v));
+            if (currentValues.length > 0) {
+              // Use mean for the current group
+              currentValue = currentValues.reduce((sum: number, val: number) => sum + val, 0) / currentValues.length;
+            }
+            
+            // Get the previous value
+            const previousGroupKey = groupBy.map(col => previousRow[col]).join('||');
+            const previousGroupRows = groups.get(previousGroupKey) || [];
+            const previousValues = previousGroupRows.map((r: Record<string, any>) => toNumber(r[agg.column])).filter((v: number) => !isNaN(v));
+            if (previousValues.length > 0 && currentValue !== null) {
+              const previousValue = previousValues.reduce((sum: number, val: number) => sum + val, 0) / previousValues.length;
+              if (previousValue !== 0 && !isNaN(previousValue) && !isNaN(currentValue)) {
+                // Calculate percent change: ((current - previous) / previous) * 100
+                currentRow[targetName] = ((currentValue - previousValue) / previousValue) * 100;
+              } else {
+                currentRow[targetName] = null;
+              }
+            } else {
+              currentRow[targetName] = null;
+            }
+          } else {
+            // First row has no previous value
+            currentRow[targetName] = null;
+          }
+        }
+      }
+    }
+  } else {
+    // Regular aggregation (no percent_change or multiple groupBy columns)
+    for (const [key, rows] of Array.from(groups.entries())) {
+      const base: Record<string, any> = {};
+      const keyParts = key.split('||');
+      groupBy.forEach((col, idx) => {
+        base[col] = keyParts[idx];
+      });
+
+      for (const agg of aggregations) {
+        const values = rows.map((r: Record<string, any>) => toNumber(r[agg.column])).filter((v: number) => !isNaN(v));
+        let resultValue: number | null = null;
+        switch (agg.operation) {
+          case 'sum':
+            resultValue = values.reduce((sum: number, val: number) => sum + val, 0);
+            break;
+          case 'mean':
+          case 'avg':
+            resultValue = values.reduce((sum: number, val: number) => sum + val, 0) / (values.length || 1);
+            break;
+          case 'count':
+            resultValue = values.length;
+            break;
+          case 'min':
+            resultValue = values.length ? Math.min(...values) : null;
+            break;
+          case 'max':
+            resultValue = values.length ? Math.max(...values) : null;
+            break;
+          case 'median':
+            if (values.length) {
+              const sortedVals = [...values].sort((a, b) => a - b);
+              const mid = Math.floor(sortedVals.length / 2);
+              resultValue =
+                sortedVals.length % 2 === 0
+                  ? (sortedVals[mid - 1] + sortedVals[mid]) / 2
+                  : sortedVals[mid];
+            }
+            break;
+        }
+        const targetName = agg.alias || `${agg.column}_${agg.operation}`;
+        base[targetName] = resultValue;
+      }
+
+      aggregatedRows.push(base);
+    }
   }
 
   return {
@@ -342,8 +524,11 @@ export function applyQueryTransformations(
 
   if (parsed.valueFilters) {
     for (const filter of parsed.valueFilters) {
+      console.log(`🔍 Applying value filter: ${filter.column} ${filter.operator} ${filter.reference || filter.value}`);
+      console.log(`   Data before filter: ${workingData.length} rows`);
       const { data: filtered, description } = applyValueFilter(workingData, filter);
       workingData = filtered;
+      console.log(`   Data after filter: ${workingData.length} rows`);
       if (description) descriptions.push(description);
     }
   }
@@ -357,9 +542,24 @@ export function applyQueryTransformations(
   }
 
   if (parsed.groupBy && parsed.aggregations && parsed.groupBy.length && parsed.aggregations.length) {
-    const { data: aggregated, description } = applyAggregations(workingData, summary, parsed.groupBy, parsed.aggregations);
-    workingData = aggregated;
-    if (description) descriptions.push(description);
+    console.log(`📊 Applying aggregations: groupBy=[${parsed.groupBy.join(', ')}], aggregations=[${parsed.aggregations.map(a => `${a.operation}(${a.column})${a.alias ? ` as ${a.alias}` : ''}`).join(', ')}]`);
+    console.log(`   Data before aggregation: ${workingData.length} rows`);
+    
+    if (workingData.length === 0) {
+      console.warn(`⚠️ Cannot aggregate: No data available (filter may have removed all rows)`);
+    } else {
+      const { data: aggregated, description } = applyAggregations(workingData, summary, parsed.groupBy, parsed.aggregations);
+      workingData = aggregated;
+      console.log(`   Data after aggregation: ${workingData.length} rows`);
+      if (workingData.length > 0) {
+        const columns = Object.keys(workingData[0]);
+        console.log(`   Aggregated columns: [${columns.join(', ')}]`);
+        console.log(`   Sample aggregated row:`, JSON.stringify(workingData[0], null, 2));
+      } else {
+        console.warn(`⚠️ Aggregation produced 0 rows!`);
+      }
+      if (description) descriptions.push(description);
+    }
   }
 
   if (parsed.topBottom) {

@@ -22,7 +22,7 @@ export interface ValueFilter {
   operator: ComparisonOperator;
   value?: number;
   value2?: number; // used for between
-  reference?: 'mean' | 'median' | 'p75' | 'p25' | 'max' | 'min';
+  reference?: 'mean' | 'avg' | 'median' | 'p75' | 'p25' | 'max' | 'min';
 }
 
 export interface ExclusionFilter {
@@ -36,7 +36,7 @@ export interface TopBottomRequest {
   count: number;
 }
 
-export type AggregationOperation = 'sum' | 'mean' | 'avg' | 'count' | 'min' | 'max' | 'median';
+export type AggregationOperation = 'sum' | 'mean' | 'avg' | 'count' | 'min' | 'max' | 'median' | 'percent_change';
 
 export interface AggregationRequest {
   column: string;

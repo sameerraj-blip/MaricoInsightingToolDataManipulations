@@ -75,8 +75,9 @@ apiClient.interceptors.response.use(
     
     if (error.response) {
       // Server responded with error status
-      const message = (error.response.data as any)?.message || error.message || 'Request failed';
-      throw new Error(`${error.response.status}: ${message}`);
+      const errorData = error.response.data as any;
+      const message = errorData?.error || errorData?.message || error.message || 'Request failed';
+      throw new Error(message);
     } else if (error.request) {
       // Request was made but no response received
       throw new Error('Network error: No response from server');
@@ -249,8 +250,16 @@ export const dashboardsApi = {
     api.post<Dashboard>('/api/dashboards', { name, charts }),
   remove: (dashboardId: string) =>
     api.delete(`/api/dashboards/${dashboardId}`),
-  addChart: (dashboardId: string, chart: ChartSpec) =>
-    api.post<Dashboard>(`/api/dashboards/${dashboardId}/charts`, { chart }),
-  removeChart: (dashboardId: string, payload: { index?: number; title?: string; type?: ChartSpec['type'] }) =>
+  addChart: (dashboardId: string, chart: ChartSpec, sheetId?: string) =>
+    api.post<Dashboard>(`/api/dashboards/${dashboardId}/charts`, { chart, sheetId }),
+  removeChart: (dashboardId: string, payload: { index?: number; title?: string; type?: ChartSpec['type']; sheetId?: string }) =>
     api.delete<Dashboard>(`/api/dashboards/${dashboardId}/charts`, { data: payload as any }),
+  addSheet: (dashboardId: string, name: string) =>
+    api.post<Dashboard>(`/api/dashboards/${dashboardId}/sheets`, { name }),
+  removeSheet: (dashboardId: string, sheetId: string) =>
+    api.delete<Dashboard>(`/api/dashboards/${dashboardId}/sheets/${sheetId}`),
+  renameSheet: (dashboardId: string, sheetId: string, name: string) =>
+    api.patch<Dashboard>(`/api/dashboards/${dashboardId}/sheets/${sheetId}`, { name }),
+  rename: (dashboardId: string, name: string) =>
+    api.patch<Dashboard>(`/api/dashboards/${dashboardId}`, { name }),
 };

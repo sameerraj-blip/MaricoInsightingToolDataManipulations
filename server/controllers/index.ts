@@ -13,4 +13,8 @@ export {
   deleteDashboardController,
   addChartToDashboardController,
   removeChartFromDashboardController,
+  addSheetToDashboardController,
+  removeSheetFromDashboardController,
+  renameSheetController,
+  renameDashboardController,
 } from './dashboardController.js';

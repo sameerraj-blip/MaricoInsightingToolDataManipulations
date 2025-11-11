@@ -29,15 +29,13 @@ export default function Dashboard() {
     }
   };
 
-  const handleDeleteChart = async (chartIndex: number) => {
-    console.log('Delete chart clicked:', { chartIndex, currentDashboard: currentDashboard?.id });
-    if (currentDashboard && confirm('Are you sure you want to remove this chart from the dashboard?')) {
+  const handleDeleteChart = async (chartIndex: number, sheetId?: string) => {
+    console.log('Delete chart clicked:', { chartIndex, sheetId, currentDashboard: currentDashboard?.id });
+    if (currentDashboard) {
       console.log('Proceeding with chart deletion');
-      const updatedDashboard = await removeChartFromDashboard(currentDashboard.id, chartIndex);
+      const updatedDashboard = await removeChartFromDashboard(currentDashboard.id, chartIndex, sheetId);
       setCurrentDashboard(updatedDashboard);
       await refetch();
-    } else {
-      console.log('Chart deletion cancelled or no current dashboard');
     }
   };
 

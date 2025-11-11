@@ -6,11 +6,15 @@ import {
 } from "../../shared/schema.js";
 import {
   addChartToDashboard,
+  addSheetToDashboard,
   createDashboard,
   deleteDashboard,
   getDashboardById,
   getUserDashboards,
   removeChartFromDashboard,
+  removeSheetFromDashboard,
+  renameSheet,
+  renameDashboard,
 } from "../lib/cosmosDB.js";
 
 export const createDashboardController = async (req: Request, res: Response) => {
@@ -20,7 +24,12 @@ export const createDashboardController = async (req: Request, res: Response) => 
     const dashboard = await createDashboard(username, parsed.name, parsed.charts || []);
     res.status(201).json(dashboard);
   } catch (error: any) {
-    res.status(400).json({ error: error?.message || 'Failed to create dashboard' });
+    // Check if it's a duplicate name error
+    if (error?.message?.includes('already exists')) {
+      res.status(409).json({ error: error.message });
+    } else {
+      res.status(400).json({ error: error?.message || 'Failed to create dashboard' });
+    }
   }
 };
 
@@ -52,10 +61,81 @@ export const addChartToDashboardController = async (req: Request, res: Response)
     const username = (req.body.username || req.headers['x-user-email'] || 'anonymous@example.com') as string;
     const { dashboardId } = req.params as { dashboardId: string };
     const parsed = addChartToDashboardRequestSchema.parse(req.body);
-    const updated = await addChartToDashboard(dashboardId, username, parsed.chart);
+    const updated = await addChartToDashboard(dashboardId, username, parsed.chart, parsed.sheetId);
     res.json(updated);
   } catch (error: any) {
     res.status(400).json({ error: error?.message || 'Failed to add chart' });
+  }
+};
+
+export const addSheetToDashboardController = async (req: Request, res: Response) => {
+  try {
+    const username = (req.body.username || req.headers['x-user-email'] || 'anonymous@example.com') as string;
+    const { dashboardId } = req.params as { dashboardId: string };
+    const { name } = req.body;
+    if (!name || typeof name !== 'string' || name.trim().length === 0) {
+      return res.status(400).json({ error: 'Sheet name is required' });
+    }
+    const updated = await addSheetToDashboard(dashboardId, username, name.trim());
+    res.json(updated);
+  } catch (error: any) {
+    // Check if it's a duplicate name error
+    if (error?.message?.includes('already exists')) {
+      res.status(409).json({ error: error.message });
+    } else {
+      res.status(400).json({ error: error?.message || 'Failed to add sheet' });
+    }
+  }
+};
+
+export const removeSheetFromDashboardController = async (req: Request, res: Response) => {
+  try {
+    const username = (req.body.username || req.headers['x-user-email'] || 'anonymous@example.com') as string;
+    const { dashboardId, sheetId } = req.params as { dashboardId: string; sheetId: string };
+    const updated = await removeSheetFromDashboard(dashboardId, username, sheetId);
+    res.json(updated);
+  } catch (error: any) {
+    res.status(400).json({ error: error?.message || 'Failed to remove sheet' });
+  }
+};
+
+export const renameSheetController = async (req: Request, res: Response) => {
+  try {
+    const username = (req.body.username || req.headers['x-user-email'] || 'anonymous@example.com') as string;
+    const { dashboardId, sheetId } = req.params as { dashboardId: string; sheetId: string };
+    const { name } = req.body;
+    if (!name || typeof name !== 'string' || name.trim().length === 0) {
+      return res.status(400).json({ error: 'Sheet name is required' });
+    }
+    const updated = await renameSheet(dashboardId, username, sheetId, name.trim());
+    res.json(updated);
+  } catch (error: any) {
+    // Check if it's a duplicate name error
+    if (error?.message?.includes('already exists')) {
+      res.status(409).json({ error: error.message });
+    } else {
+      res.status(400).json({ error: error?.message || 'Failed to rename sheet' });
+    }
+  }
+};
+
+export const renameDashboardController = async (req: Request, res: Response) => {
+  try {
+    const username = (req.body.username || req.headers['x-user-email'] || 'anonymous@example.com') as string;
+    const { dashboardId } = req.params as { dashboardId: string };
+    const { name } = req.body;
+    if (!name || typeof name !== 'string' || name.trim().length === 0) {
+      return res.status(400).json({ error: 'Dashboard name is required' });
+    }
+    const updated = await renameDashboard(dashboardId, username, name.trim());
+    res.json(updated);
+  } catch (error: any) {
+    // Check if it's a duplicate name error
+    if (error?.message?.includes('already exists')) {
+      res.status(409).json({ error: error.message });
+    } else {
+      res.status(400).json({ error: error?.message || 'Failed to rename dashboard' });
+    }
   }
 };
 

@@ -84,7 +84,7 @@ export interface ChatDocument {
   sessionId: string; // Original session ID
   // Enhanced analysis data storage
   rawData: Record<string, any>[]; // Complete raw data from uploaded file
-  sampleRows: Record<string, any>[]; // Sample rows for preview (first 10)
+  sampleRows: Record<string, any>[]; // Sample rows for preview (first 50)
   columnStatistics: Record<string, any>; // Statistical analysis of numeric columns
   blobInfo?: { // Azure Blob Storage information
     blobUrl: string;
@@ -504,15 +504,36 @@ export const createDashboard = async (
   if (!dashboardsContainer) {
     throw new Error("CosmosDB dashboards container not initialized.");
   }
+  
+  // Check if a dashboard with the same name already exists for this username
+  const existingDashboards = await getUserDashboards(username);
+  const duplicateDashboard = existingDashboards.find(
+    d => d.name.toLowerCase().trim() === name.toLowerCase().trim()
+  );
+  
+  if (duplicateDashboard) {
+    throw new Error(`A dashboard with the name "${name}" already exists. Please enter a different name.`);
+  }
+  
   const timestamp = Date.now();
   const id = `${name.replace(/[^a-zA-Z0-9]/g, '_')}_${timestamp}`;
+  
+  // Create default sheet with charts
+  const defaultSheet = {
+    id: 'default',
+    name: 'Overview',
+    charts,
+    order: 0,
+  };
+  
   const dashboard: Dashboard = {
     id,
     username,
     name,
     createdAt: timestamp,
     updatedAt: timestamp,
-    charts,
+    charts, // Keep for backward compatibility
+    sheets: [defaultSheet],
   };
   const { resource } = await dashboardsContainer.items.create(dashboard);
   return resource as unknown as Dashboard;
@@ -539,6 +560,29 @@ export const getDashboardById = async (id: string, username: string): Promise<Da
   }
 };
 
+export const renameDashboard = async (
+  id: string,
+  username: string,
+  newName: string
+): Promise<Dashboard> => {
+  const dashboard = await getDashboardById(id, username);
+  if (!dashboard) throw new Error("Dashboard not found");
+  
+  // Check if a dashboard with the same name already exists for this username (excluding current dashboard)
+  const existingDashboards = await getUserDashboards(username);
+  const duplicateDashboard = existingDashboards.find(
+    d => d.id !== id && d.name.toLowerCase().trim() === newName.toLowerCase().trim()
+  );
+  
+  if (duplicateDashboard) {
+    throw new Error(`A dashboard with the name "${newName}" already exists. Please enter a different name.`);
+  }
+  
+  dashboard.name = newName;
+  dashboard.updatedAt = Date.now();
+  return updateDashboard(dashboard);
+};
+
 export const updateDashboard = async (dashboard: Dashboard): Promise<Dashboard> => {
   dashboard.updatedAt = Date.now();
   const { resource } = await dashboardsContainer.items.upsert(dashboard);
@@ -552,31 +596,243 @@ export const deleteDashboard = async (id: string, username: string): Promise<voi
 export const addChartToDashboard = async (
   id: string,
   username: string,
-  chart: ChartSpec
+  chart: ChartSpec,
+  sheetId?: string
 ): Promise<Dashboard> => {
   const dashboard = await getDashboardById(id, username);
   if (!dashboard) throw new Error("Dashboard not found");
+  
+  // Initialize sheets if not present (backward compatibility)
+  if (!dashboard.sheets || dashboard.sheets.length === 0) {
+    dashboard.sheets = [{
+      id: 'default',
+      name: 'Overview',
+      charts: [...dashboard.charts],
+      order: 0,
+    }];
+  }
+  
+  // If sheetId is provided, add to that sheet; otherwise add to first sheet
+  const targetSheetId = sheetId || dashboard.sheets[0].id;
+  const targetSheet = dashboard.sheets.find(s => s.id === targetSheetId);
+  
+  if (!targetSheet) {
+    throw new Error(`Sheet with id ${targetSheetId} not found`);
+  }
+  
+  targetSheet.charts.push(chart);
+  
+  // Also update the legacy charts array for backward compatibility
   dashboard.charts.push(chart);
+  
+  return updateDashboard(dashboard);
+};
+
+export const addSheetToDashboard = async (
+  id: string,
+  username: string,
+  sheetName: string
+): Promise<Dashboard> => {
+  const dashboard = await getDashboardById(id, username);
+  if (!dashboard) throw new Error("Dashboard not found");
+  
+  // Initialize sheets if not present
+  if (!dashboard.sheets || dashboard.sheets.length === 0) {
+    dashboard.sheets = [{
+      id: 'default',
+      name: 'Overview',
+      charts: [...dashboard.charts],
+      order: 0,
+    }];
+  }
+  
+  const trimmedName = sheetName.trim();
+  
+  // Check for duplicate sheet names (case-insensitive)
+  const duplicateSheet = dashboard.sheets.find(s => 
+    s.name.toLowerCase().trim() === trimmedName.toLowerCase()
+  );
+  
+  if (duplicateSheet) {
+    throw new Error(`A sheet with the name "${trimmedName}" already exists. Please enter a different name.`);
+  }
+  
+  const newSheet = {
+    id: `sheet-${Date.now()}`,
+    name: trimmedName,
+    charts: [],
+    order: dashboard.sheets.length,
+  };
+  
+  dashboard.sheets.push(newSheet);
+  return updateDashboard(dashboard);
+};
+
+export const removeSheetFromDashboard = async (
+  id: string,
+  username: string,
+  sheetId: string
+): Promise<Dashboard> => {
+  const dashboard = await getDashboardById(id, username);
+  if (!dashboard) throw new Error("Dashboard not found");
+  
+  if (!dashboard.sheets || dashboard.sheets.length <= 1) {
+    throw new Error("Cannot remove the last sheet");
+  }
+  
+  dashboard.sheets = dashboard.sheets.filter(s => s.id !== sheetId);
+  return updateDashboard(dashboard);
+};
+
+export const renameSheet = async (
+  id: string,
+  username: string,
+  sheetId: string,
+  newName: string
+): Promise<Dashboard> => {
+  const dashboard = await getDashboardById(id, username);
+  if (!dashboard) throw new Error("Dashboard not found");
+  
+  if (!dashboard.sheets) {
+    throw new Error("No sheets found");
+  }
+  
+  const sheet = dashboard.sheets.find(s => s.id === sheetId);
+  if (!sheet) throw new Error("Sheet not found");
+  
+  const trimmedName = newName.trim();
+  
+  // Check for duplicate sheet names (case-insensitive, excluding current sheet)
+  const duplicateSheet = dashboard.sheets.find(s => 
+    s.id !== sheetId && s.name.toLowerCase().trim() === trimmedName.toLowerCase()
+  );
+  
+  if (duplicateSheet) {
+    throw new Error(`A sheet with the name "${trimmedName}" already exists. Please enter a different name.`);
+  }
+  
+  sheet.name = trimmedName;
   return updateDashboard(dashboard);
 };
 
 export const removeChartFromDashboard = async (
   id: string,
   username: string,
-  predicate: { index?: number; title?: string; type?: ChartSpec["type"] }
+  predicate: { index?: number; title?: string; type?: ChartSpec["type"]; sheetId?: string }
 ): Promise<Dashboard> => {
   const dashboard = await getDashboardById(id, username);
   if (!dashboard) throw new Error("Dashboard not found");
 
-  if (typeof predicate.index === 'number') {
-    dashboard.charts.splice(predicate.index, 1);
-  } else if (predicate.title || predicate.type) {
-    dashboard.charts = dashboard.charts.filter(c => {
-      const titleMatch = predicate.title ? c.title !== predicate.title : true;
-      const typeMatch = predicate.type ? c.type !== predicate.type : true;
-      return titleMatch || typeMatch;
-    });
+  console.log('Removing chart from dashboard:', { 
+    dashboardId: id, 
+    predicate, 
+    hasSheets: !!dashboard.sheets, 
+    sheetsCount: dashboard.sheets?.length || 0 
+  });
+
+  // If sheetId is provided, remove from that specific sheet
+  if (predicate.sheetId && dashboard.sheets && dashboard.sheets.length > 0) {
+    const sheet = dashboard.sheets.find(s => s.id === predicate.sheetId);
+    if (!sheet) {
+      // If sheet not found, check if it's a default sheet (backward compatibility)
+      if (predicate.sheetId === 'default' && dashboard.charts.length > 0) {
+        // For default sheet, remove from main charts array
+        if (typeof predicate.index === 'number' && predicate.index >= 0 && predicate.index < dashboard.charts.length) {
+          dashboard.charts.splice(predicate.index, 1);
+        }
+        return updateDashboard(dashboard);
+      }
+      throw new Error(`Sheet with id "${predicate.sheetId}" not found`);
+    }
+
+    if (typeof predicate.index === 'number') {
+      if (predicate.index >= 0 && predicate.index < sheet.charts.length) {
+        // Get the chart BEFORE removing it
+        const chartToRemove = sheet.charts[predicate.index];
+        
+        // Remove from the specific sheet
+        sheet.charts.splice(predicate.index, 1);
+        
+        // Check if this chart exists in other sheets
+        const existsInOtherSheets = dashboard.sheets.some(s => 
+          s.id !== sheet.id && s.charts.some(c => 
+            c.title === chartToRemove.title && c.type === chartToRemove.type
+          )
+        );
+        
+        // Only remove from main charts array if it doesn't exist in other sheets
+        if (!existsInOtherSheets) {
+          const mainIndex = dashboard.charts.findIndex(c => 
+            c.title === chartToRemove.title && c.type === chartToRemove.type
+          );
+          if (mainIndex >= 0) {
+            dashboard.charts.splice(mainIndex, 1);
+          }
+        }
+      }
+    } else if (predicate.title || predicate.type) {
+      // Filter sheet charts
+      const removedCharts = sheet.charts.filter(c => {
+        const titleMatch = predicate.title ? c.title === predicate.title : false;
+        const typeMatch = predicate.type ? c.type === predicate.type : false;
+        return titleMatch || typeMatch;
+      });
+      
+      sheet.charts = sheet.charts.filter(c => {
+        const titleMatch = predicate.title ? c.title !== predicate.title : true;
+        const typeMatch = predicate.type ? c.type !== predicate.type : true;
+        return titleMatch || typeMatch;
+      });
+      
+      // Remove from main charts array only if not in other sheets
+      removedCharts.forEach(removedChart => {
+        const existsInOtherSheets = dashboard.sheets && dashboard.sheets.some(s => 
+          s.id !== sheet.id && s.charts.some(c => 
+            c.title === removedChart.title && c.type === removedChart.type
+          )
+        );
+        
+        if (!existsInOtherSheets) {
+          const mainIndex = dashboard.charts.findIndex(c => 
+            c.title === removedChart.title && c.type === removedChart.type
+          );
+          if (mainIndex >= 0) {
+            dashboard.charts.splice(mainIndex, 1);
+          }
+        }
+      });
+    }
+  } else {
+    // Legacy behavior: remove from main charts array
+    if (typeof predicate.index === 'number') {
+      dashboard.charts.splice(predicate.index, 1);
+      // Also remove from all sheets
+      if (dashboard.sheets) {
+        dashboard.sheets.forEach(sheet => {
+          if (predicate.index! < sheet.charts.length) {
+            sheet.charts.splice(predicate.index!, 1);
+          }
+        });
+      }
+    } else if (predicate.title || predicate.type) {
+      dashboard.charts = dashboard.charts.filter(c => {
+        const titleMatch = predicate.title ? c.title !== predicate.title : true;
+        const typeMatch = predicate.type ? c.type !== predicate.type : true;
+        return titleMatch || typeMatch;
+      });
+      // Also remove from all sheets
+      if (dashboard.sheets) {
+        dashboard.sheets.forEach(sheet => {
+          sheet.charts = sheet.charts.filter(c => {
+            const titleMatch = predicate.title ? c.title !== predicate.title : true;
+            const typeMatch = predicate.type ? c.type !== predicate.type : true;
+            return titleMatch || typeMatch;
+          });
+        });
+      }
+    }
   }
+
   return updateDashboard(dashboard);
 };
 

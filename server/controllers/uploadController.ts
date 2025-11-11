@@ -97,8 +97,8 @@ export const uploadFile = async (
     // Generate column statistics for numeric columns
     const columnStatistics = generateColumnStatistics(data, summary.numericColumns);
     
-    // Get top 10 rows as sample data for preview, converting dates to strings
-    const sampleRows = data.slice(0, 10).map(row => {
+    // Get top 50 rows as sample data for preview, converting dates to strings
+    const sampleRows = data.slice(0, 50).map(row => {
       const serializedRow: Record<string, any> = {};
       for (const [key, value] of Object.entries(row)) {
         // Convert Date objects to ISO strings

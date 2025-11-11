@@ -4,9 +4,12 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent } from '@/components/ui/card';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Plus, BarChart3, X, Clock, ArrowLeft } from 'lucide-react';
 import { ChartSpec } from '@shared/schema';
 import { useDashboardContext } from '@/pages/Dashboard/context/DashboardContext';
+import { dashboardsApi } from '@/lib/api';
+import { useToast } from '@/hooks/use-toast';
 
 interface DashboardModalProps {
   isOpen: boolean;
@@ -18,11 +21,15 @@ export function DashboardModal({ isOpen, onClose, chart }: DashboardModalProps) 
   const [step, setStep] = useState<'select' | 'confirm'>('select');
   const [newDashboardName, setNewDashboardName] = useState('');
   const [selectedDashboard, setSelectedDashboard] = useState('');
+  const [selectedSheetId, setSelectedSheetId] = useState<string>('');
+  const [newSheetName, setNewSheetName] = useState('');
+  const [createNewSheet, setCreateNewSheet] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [showDropdown, setShowDropdown] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const { toast } = useToast();
   
-  const { dashboards, createDashboard, addChartToDashboard } = useDashboardContext();
+  const { dashboards, createDashboard, addChartToDashboard, refetch } = useDashboardContext();
 
   // Filter dashboards based on search query
   const filteredDashboards = dashboards.filter(dashboard =>
@@ -34,11 +41,32 @@ export function DashboardModal({ isOpen, onClose, chart }: DashboardModalProps) 
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
     .slice(0, 5);
 
+  // Get selected dashboard's sheets
+  const selectedDashboardData = dashboards.find(d => d.id === selectedDashboard);
+  // If no sheets exist, create a default one for backward compatibility
+  const sheets = selectedDashboardData?.sheets && selectedDashboardData.sheets.length > 0 
+    ? selectedDashboardData.sheets 
+    : selectedDashboardData 
+      ? [{ id: 'default', name: 'Overview', charts: selectedDashboardData.charts || [], order: 0 }]
+      : [];
+  
+  // Debug logging
+  useEffect(() => {
+    if (selectedDashboard) {
+      console.log('Selected dashboard:', selectedDashboardData);
+      console.log('Sheets:', sheets);
+      console.log('Selected sheet ID:', selectedSheetId);
+    }
+  }, [selectedDashboard, selectedDashboardData, sheets, selectedSheetId]);
+
   // Reset modal state when opening/closing
   const resetModal = () => {
     setStep('select');
     setNewDashboardName('');
     setSelectedDashboard('');
+    setSelectedSheetId('');
+    setNewSheetName('');
+    setCreateNewSheet(false);
     setSearchQuery('');
     setShowDropdown(false);
   };
@@ -121,6 +149,16 @@ export function DashboardModal({ isOpen, onClose, chart }: DashboardModalProps) 
                                 setSearchQuery(dashboard.name);
                                 setShowDropdown(false);
                                 setNewDashboardName('');
+                                // Set default sheet to first sheet
+                                const dashboardData = dashboards.find(d => d.id === dashboard.id);
+                                if (dashboardData?.sheets && dashboardData.sheets.length > 0) {
+                                  setSelectedSheetId(dashboardData.sheets[0].id);
+                                  setCreateNewSheet(false);
+                                } else {
+                                  // Use default sheet for backward compatibility
+                                  setSelectedSheetId('default');
+                                  setCreateNewSheet(false);
+                                }
                                 setStep('confirm');
                               }}
                             >
@@ -158,6 +196,16 @@ export function DashboardModal({ isOpen, onClose, chart }: DashboardModalProps) 
                           setSelectedDashboard(dashboard.id);
                           setSearchQuery(dashboard.name);
                           setNewDashboardName('');
+                          // Set default sheet to first sheet
+                          const dashboardData = dashboards.find(d => d.id === dashboard.id);
+                          if (dashboardData?.sheets && dashboardData.sheets.length > 0) {
+                            setSelectedSheetId(dashboardData.sheets[0].id);
+                            setCreateNewSheet(false);
+                          } else {
+                            // Use default sheet for backward compatibility
+                            setSelectedSheetId('default');
+                            setCreateNewSheet(false);
+                          }
                           setStep('confirm');
                         }}
                       >
@@ -231,25 +279,120 @@ export function DashboardModal({ isOpen, onClose, chart }: DashboardModalProps) 
                   </div>
                 </div>
 
+                {/* Sheet Selection (only for existing dashboards) */}
+                {selectedDashboard && (
+                  <div className="space-y-3">
+                    <Label className="text-sm font-medium">Select Sheet:</Label>
+                    <RadioGroup value={createNewSheet ? 'new' : (selectedSheetId || sheets[0]?.id || '')} onValueChange={(value) => {
+                      if (value === 'new') {
+                        setCreateNewSheet(true);
+                        setSelectedSheetId('');
+                      } else {
+                        setCreateNewSheet(false);
+                        setSelectedSheetId(value);
+                      }
+                    }}>
+                      {sheets.map((sheet) => (
+                        <div key={sheet.id} className="flex items-center space-x-2">
+                          <RadioGroupItem value={sheet.id} id={sheet.id} />
+                          <Label htmlFor={sheet.id} className="flex-1 cursor-pointer">
+                            <div className="font-medium">{sheet.name}</div>
+                            <div className="text-xs text-muted-foreground">
+                              {sheet.charts.length} charts
+                            </div>
+                          </Label>
+                        </div>
+                      ))}
+                      <div className="flex items-center space-x-2">
+                        <RadioGroupItem value="new" id="new-sheet" />
+                        <Label htmlFor="new-sheet" className="flex-1 cursor-pointer">
+                          <div className="font-medium flex items-center gap-2">
+                            <Plus className="h-4 w-4" />
+                            Create New Sheet
+                          </div>
+                        </Label>
+                      </div>
+                    </RadioGroup>
+
+                    {createNewSheet && (
+                      <div className="ml-6 space-y-2">
+                        <Label htmlFor="new-sheet-name" className="text-sm">Sheet Name:</Label>
+                        <Input
+                          id="new-sheet-name"
+                          placeholder="Enter sheet name..."
+                          value={newSheetName}
+                          onChange={(e) => setNewSheetName(e.target.value)}
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* Actions */}
                 <div className="flex gap-2 pt-4">
                   <Button
                     onClick={async () => {
-                      console.log('Button clicked:', { selectedDashboard, newDashboardName, chart });
+                      console.log('Button clicked:', { selectedDashboard, newDashboardName, chart, selectedSheetId, createNewSheet, newSheetName });
                       if (selectedDashboard) {
                         // Add to existing dashboard
-                        console.log('Adding to existing dashboard:', selectedDashboard);
-                        await addChartToDashboard(selectedDashboard, chart);
+                        let targetSheetId = selectedSheetId;
+                        
+                        // If creating a new sheet, create it first
+                        if (createNewSheet && newSheetName.trim()) {
+                          try {
+                            const updated = await dashboardsApi.addSheet(selectedDashboard, newSheetName.trim());
+                            const newSheet = updated.sheets?.find(s => s.name === newSheetName.trim());
+                            if (newSheet) {
+                              targetSheetId = newSheet.id;
+                            }
+                            await refetch();
+                          } catch (error) {
+                            console.error('Failed to create sheet:', error);
+                            return;
+                          }
+                        }
+                        
+                        console.log('Adding to existing dashboard:', selectedDashboard, 'sheet:', targetSheetId);
+                        // If targetSheetId is 'default' but dashboard doesn't have sheets, pass undefined to let backend handle it
+                        const finalSheetId = (targetSheetId === 'default' && selectedDashboardData?.sheets && selectedDashboardData.sheets.length === 0) 
+                          ? undefined 
+                          : targetSheetId || undefined;
+                        await addChartToDashboard(selectedDashboard, chart, finalSheetId);
+                        toast({
+                          title: 'Success',
+                          description: 'Chart added to dashboard successfully.',
+                        });
                         onClose();
                       } else if (newDashboardName.trim()) {
                         // Create new dashboard and add chart
-                        console.log('Creating new dashboard:', newDashboardName.trim());
-                        const newDashboard = await createDashboard(newDashboardName.trim());
-                        await addChartToDashboard(newDashboard.id, chart);
-                        onClose();
+                        try {
+                          console.log('Creating new dashboard:', newDashboardName.trim());
+                          const newDashboard = await createDashboard(newDashboardName.trim());
+                          // New dashboards have a default "Overview" sheet, so we can add directly
+                          await addChartToDashboard(newDashboard.id, chart);
+                          toast({
+                            title: 'Success',
+                            description: `Dashboard "${newDashboardName.trim()}" created and chart added successfully.`,
+                          });
+                          onClose();
+                        } catch (error: any) {
+                          console.error('Failed to create dashboard:', error);
+                          const errorMessage = error?.message || 'Failed to create dashboard';
+                          toast({
+                            title: 'Error',
+                            description: errorMessage,
+                            variant: 'destructive',
+                          });
+                          // If it's a duplicate name error, keep the modal open so user can change the name
+                          if (errorMessage.includes('already exists')) {
+                            // Don't close the modal, let user try again with a different name
+                            return;
+                          }
+                        }
                       }
                     }}
                     className="flex-1"
+                    disabled={createNewSheet && !newSheetName.trim()}
                   >
                     {selectedDashboard ? 'Add to Dashboard' : 'Create New Dashboard'}
                   </Button>

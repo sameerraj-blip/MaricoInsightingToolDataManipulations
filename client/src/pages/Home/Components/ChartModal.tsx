@@ -505,7 +505,7 @@ export function ChartModal({
                 </PopoverTrigger>
                 <PopoverContent
                   align="end"
-                  className="w-80 space-y-4 p-4"
+                  className="w-80 max-h-[80vh] space-y-4 p-4 overflow-y-auto"
                   sideOffset={8}
                 >
                   {filterDefinitions.map((definition) => {
@@ -527,7 +527,7 @@ export function ChartModal({
                               </Button>
                             )}
                           </div>
-                          <ScrollArea className="max-h-52 pr-2">
+                          <ScrollArea className="h-52 pr-2">
                             <div className="flex flex-col gap-2">
                               {definition.options.map((option) => {
                                 const isChecked =

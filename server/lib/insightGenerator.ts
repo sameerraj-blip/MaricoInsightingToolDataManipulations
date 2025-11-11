@@ -156,7 +156,7 @@ export async function generateChartInsights(
     const avgXTop10 = xInTop10.length > 0 ? xInTop10.reduce((a, b) => a + b, 0) / xInTop10.length : NaN;
 
     const r = pearsonR(numericX, numericY);
-    const trend = isNaN(r) ? '' : r > 0.15 ? 'positive' : r < -0.15 ? 'negative' : 'weak';
+    const trend = isNaN(r) ? '' : r > 0 ? 'positive' : 'negative';
     const strength = isNaN(r) ? '' : Math.abs(r) > 0.7 ? 'strong' : Math.abs(r) > 0.4 ? 'moderate' : 'weak';
 
     // Concise insight (1–2 sentences) focused on chart specifics

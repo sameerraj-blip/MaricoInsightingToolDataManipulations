@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { DashboardTile } from '@/pages/Dashboard/types';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Trash2 } from 'lucide-react';
 import { ChartRenderer } from '@/pages/Home/Components/ChartRenderer';
 import { Responsive, WidthProvider, Layout, Layouts } from 'react-grid-layout';
@@ -181,6 +182,8 @@ export const DashboardTiles: React.FC<DashboardTilesProps> = ({
   onTileFiltersChange,
 }) => {
   const [hiddenIds, setHiddenIds] = useState<Set<string>>(() => loadHiddenTiles(dashboardId));
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<{ type: 'chart' | 'insight' | 'action'; index: number; title: string } | null>(null);
 
   useEffect(() => {
     setHiddenIds(loadHiddenTiles(dashboardId));
@@ -237,6 +240,34 @@ export const DashboardTiles: React.FC<DashboardTilesProps> = ({
     });
   }, [dashboardId]);
 
+  const handleDeleteClick = useCallback((tile: DashboardTile) => {
+    if (tile.kind === 'chart') {
+      setPendingDelete({ type: 'chart', index: tile.index, title: tile.title || `Chart ${tile.index + 1}` });
+      setDeleteConfirmOpen(true);
+    } else if (tile.kind === 'insight' || tile.kind === 'action') {
+      // For insights and actions, delete the associated chart
+      if (tile.relatedChartId) {
+        const relatedTile = tiles.find(t => t.id === tile.relatedChartId);
+        if (relatedTile && relatedTile.kind === 'chart') {
+          setPendingDelete({ 
+            type: tile.kind === 'insight' ? 'insight' : 'action', 
+            index: relatedTile.index, 
+            title: tile.title || (tile.kind === 'insight' ? 'Key Insight' : 'Recommended Action')
+          });
+          setDeleteConfirmOpen(true);
+        }
+      }
+    }
+  }, [tiles]);
+
+  const handleConfirmDelete = useCallback(() => {
+    if (pendingDelete) {
+      onDeleteChart(pendingDelete.index);
+      setDeleteConfirmOpen(false);
+      setPendingDelete(null);
+    }
+  }, [pendingDelete, onDeleteChart]);
+
   useEffect(() => {
     persistHiddenTiles(dashboardId, hiddenIds);
   }, [dashboardId, hiddenIds]);
@@ -251,7 +282,7 @@ export const DashboardTiles: React.FC<DashboardTilesProps> = ({
                 variant="ghost"
                 size="icon"
                 aria-label="Remove chart from dashboard"
-                onClick={() => onDeleteChart(tile.index)}
+                onClick={() => handleDeleteClick(tile)}
               >
                 <Trash2 className="h-4 w-4 text-muted-foreground hover:text-destructive" />
               </Button>
@@ -291,7 +322,7 @@ export const DashboardTiles: React.FC<DashboardTilesProps> = ({
                 variant="ghost"
                 size="icon"
                 aria-label="Remove insight tile"
-                onClick={() => handleHideTile(tile.id)}
+                onClick={() => handleDeleteClick(tile)}
               >
                 <Trash2 className="h-4 w-4 text-muted-foreground hover:text-destructive" />
               </Button>
@@ -312,7 +343,7 @@ export const DashboardTiles: React.FC<DashboardTilesProps> = ({
                 variant="ghost"
                 size="icon"
                 aria-label="Remove recommendation tile"
-                onClick={() => handleHideTile(tile.id)}
+                onClick={() => handleDeleteClick(tile)}
               >
                 <Trash2 className="h-4 w-4 text-emerald-600 hover:text-destructive" />
               </Button>
@@ -368,6 +399,37 @@ export const DashboardTiles: React.FC<DashboardTilesProps> = ({
           </Button>
         </div>
       )}
+
+      {/* Delete Confirmation Modal */}
+      <Dialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirm Deletion</DialogTitle>
+            <DialogDescription>
+              {pendingDelete?.type === 'chart' && (
+                <>Are you sure you want to delete the chart "{pendingDelete.title}"? This will also remove its associated insights and recommendations. This action cannot be undone.</>
+              )}
+              {pendingDelete?.type === 'insight' && (
+                <>Are you sure you want to delete the key insight? This will also remove the associated chart and recommendations. This action cannot be undone.</>
+              )}
+              {pendingDelete?.type === 'action' && (
+                <>Are you sure you want to delete the recommended action? This will also remove the associated chart and insights. This action cannot be undone.</>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => {
+              setDeleteConfirmOpen(false);
+              setPendingDelete(null);
+            }}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={handleConfirmDelete}>
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

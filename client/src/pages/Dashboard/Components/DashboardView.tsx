@@ -8,8 +8,12 @@ import { DashboardHeader } from './DashboardHeader';
 import { DashboardFilters } from './DashboardFilters';
 import { DashboardSectionNav } from './DashboardSectionNav';
 import { DashboardTiles } from './DashboardTiles';
-import { DashboardEmptyState } from './DashboardEmptyState';
 import { ActiveChartFilters, hasActiveFilters, summarizeChartFilters } from '@/lib/chartFilters';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { ChevronLeft, ChevronRight, FileText, Edit2, Check, X } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { useDashboardContext } from '../context/DashboardContext';
 
 interface DashboardViewProps {
   dashboard: DashboardData;
@@ -23,12 +27,44 @@ const PPT_LAYOUT = 'LAYOUT_16x9';
 
 export function DashboardView({ dashboard, onBack, onDeleteChart, isRefreshing = false, onRefresh }: DashboardViewProps) {
   const [isExporting, setIsExporting] = useState(false);
-  const [activeSectionId, setActiveSectionId] = useState('overview');
+  const [activeSheetId, setActiveSheetId] = useState<string | null>(null);
+  const [isSheetSidebarOpen, setIsSheetSidebarOpen] = useState(true);
   const [tileFilters, setTileFilters] = useState<Record<string, ActiveChartFilters>>({});
+  const [editingSheetId, setEditingSheetId] = useState<string | null>(null);
+  const [editSheetName, setEditSheetName] = useState('');
   const { toast } = useToast();
+  const { renameDashboard, renameSheet, refetch: refetchDashboards } = useDashboardContext();
+
+  // Get sheets or create default from charts (backward compatibility)
+  const sheets = useMemo(() => {
+    if (dashboard.sheets && dashboard.sheets.length > 0) {
+      return dashboard.sheets.sort((a, b) => (a.order || 0) - (b.order || 0));
+    }
+    // Backward compatibility: create default sheet from charts
+    return [{
+      id: 'default',
+      name: 'Overview',
+      charts: dashboard.charts,
+      order: 0,
+    }];
+  }, [dashboard.sheets, dashboard.charts]);
+
+  // Set active sheet on mount
+  useEffect(() => {
+    if (!activeSheetId && sheets.length > 0) {
+      setActiveSheetId(sheets[0].id);
+    }
+  }, [activeSheetId, sheets]);
+
+  const activeSheet = sheets.find(s => s.id === activeSheetId) || sheets[0];
+  
+  // Ensure activeSheetId is always set when we have sheets
+  const currentSheetId = activeSheetId || (sheets.length > 0 ? sheets[0].id : null);
 
   const sections = useMemo<DashboardSection[]>(() => {
-    const baseTiles: DashboardTile[] = dashboard.charts.flatMap((chart, index) => {
+    if (!activeSheet) return [];
+    
+    const baseTiles: DashboardTile[] = activeSheet.charts.flatMap((chart, index) => {
       const chartId = `chart-${index}`;
       const tiles: DashboardTile[] = [
         {
@@ -66,19 +102,16 @@ export function DashboardView({ dashboard, onBack, onDeleteChart, isRefreshing =
       return tiles;
     });
 
-    if (baseTiles.length === 0) {
-      return [];
-    }
-
+    // Always return a section, even if there are no tiles (empty sheet)
     return [
       {
-        id: 'overview',
-        title: 'Overview',
-        description: 'A curated view of your charts, insights, and recommended actions.',
+        id: activeSheet.id,
+        title: activeSheet.name,
+        description: `Charts and insights for ${activeSheet.name}`,
         tiles: baseTiles,
       },
     ];
-  }, [dashboard.charts, dashboard.updatedAt]);
+  }, [activeSheet, dashboard.updatedAt]);
 
   const chartTiles = useMemo(
     () => sections.flatMap((section) => section.tiles).filter((tile): tile is DashboardTile & { kind: 'chart' } => tile.kind === 'chart'),
@@ -97,7 +130,7 @@ export function DashboardView({ dashboard, onBack, onDeleteChart, isRefreshing =
     return map;
   }, [sections]);
 
-  const activeSection = sections.find((section) => section.id === activeSectionId) ?? sections[0];
+  const activeSection = sections.find((section) => section.id === activeSheetId) ?? sections[0];
 
   useEffect(() => {
     const validIds = new Set(
@@ -119,7 +152,7 @@ export function DashboardView({ dashboard, onBack, onDeleteChart, isRefreshing =
 
   useEffect(() => {
     setTileFilters({});
-  }, [dashboard.id]);
+  }, [dashboard.id, activeSheetId]);
 
   const handleTileFiltersChange = useCallback((tileId: string, filters: ActiveChartFilters) => {
     setTileFilters((prev) => {
@@ -269,14 +302,6 @@ export function DashboardView({ dashboard, onBack, onDeleteChart, isRefreshing =
     }
   };
 
-  if (dashboard.charts.length === 0) {
-    return (
-      <div className="px-4 py-8">
-        <DashboardEmptyState name={dashboard.name} onBack={onBack} />
-      </div>
-    );
-  }
-
   return (
     <div className="bg-muted/30 h-[calc(100vh-72px)] flex flex-col overflow-y-auto">
       <div className="flex-shrink-0 px-4 pt-8 pb-4 lg:px-8">
@@ -287,6 +312,20 @@ export function DashboardView({ dashboard, onBack, onDeleteChart, isRefreshing =
           isExporting={isExporting}
           onBack={onBack}
           onExport={handleExport}
+          onRename={async (newName) => {
+            try {
+              await renameDashboard(dashboard.id, newName);
+              await refetch?.();
+              await refetchDashboards();
+            } catch (error: any) {
+              toast({
+                title: 'Error',
+                description: error?.message || 'Failed to rename dashboard',
+                variant: 'destructive',
+              });
+              throw error;
+            }
+          }}
         />
 
         <div className="mt-6">
@@ -299,47 +338,208 @@ export function DashboardView({ dashboard, onBack, onDeleteChart, isRefreshing =
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 flex flex-col gap-8 px-4 pb-8 lg:px-8 lg:flex-row overflow-hidden">
-        <div className="flex-shrink-0">
-          <DashboardSectionNav
-            sections={sections.map((section) => ({
-              id: section.id,
-              title: section.title,
-              count: section.tiles.length,
-            }))}
-            activeSectionId={activeSection?.id || 'overview'}
-            onSelect={(sectionId) => setActiveSectionId(sectionId)}
-          />
-        </div>
-
-        <div className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden">
-          {activeSection ? (
-            <section
-              key={activeSection.id}
-              id={`section-${activeSection.id}`}
-              className="space-y-4"
-              data-dashboard-section={activeSection.id}
+      <div className="flex-1 min-h-0 flex overflow-hidden">
+        {/* Collapsible Sheet Sidebar */}
+        {sheets.length > 1 && (
+          <>
+            <div
+              className={cn(
+                "flex-shrink-0 bg-background border-r border-border transition-all duration-300 ease-in-out overflow-hidden",
+                isSheetSidebarOpen ? "w-64" : "w-0"
+              )}
             >
-              <div>
-                <h2 className="text-lg font-semibold text-foreground">{activeSection.title}</h2>
-                {activeSection.description && (
-                  <p className="text-sm text-muted-foreground">{activeSection.description}</p>
-                )}
-              </div>
+              <div className="h-full flex flex-col">
+                <div className="flex items-center justify-between p-4 border-b">
+                  <h3 className="font-semibold text-sm text-foreground">Sheets</h3>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6"
+                    onClick={() => setIsSheetSidebarOpen(false)}
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </Button>
+                </div>
+                <div className="flex-1 overflow-y-auto p-2">
+                  <div className="space-y-1">
+                    {sheets.map((sheet) => {
+                      const isActive = activeSheetId === sheet.id;
+                      const isEditing = editingSheetId === sheet.id;
+                      
+                      const handleStartEdit = (e: React.MouseEvent) => {
+                        e.stopPropagation();
+                        setEditingSheetId(sheet.id);
+                        setEditSheetName(sheet.name);
+                      };
 
-              <DashboardTiles
-                dashboardId={dashboard.id}
-                tiles={activeSection.tiles}
-                onDeleteChart={onDeleteChart}
-                filtersByTile={tileFilters}
-                onTileFiltersChange={handleTileFiltersChange}
-              />
-            </section>
-          ) : (
-            <div className="rounded-lg border border-dashed border-border p-12 text-center text-sm text-muted-foreground">
-              Select a section to get started.
+                      const handleSaveSheet = async (e: React.MouseEvent) => {
+                        e.stopPropagation();
+                        if (!editSheetName.trim() || editSheetName.trim() === sheet.name) {
+                          setEditingSheetId(null);
+                          return;
+                        }
+                        try {
+                          await renameSheet(dashboard.id, sheet.id, editSheetName.trim());
+                          setEditingSheetId(null);
+                          await refetch?.();
+                          await refetchDashboards();
+                        } catch (error: any) {
+                          toast({
+                            title: 'Error',
+                            description: error?.message || 'Failed to rename sheet',
+                            variant: 'destructive',
+                          });
+                        }
+                      };
+
+                      const handleCancelEdit = (e: React.MouseEvent) => {
+                        e.stopPropagation();
+                        setEditingSheetId(null);
+                        setEditSheetName('');
+                      };
+
+                      const handleKeyDown = (e: React.KeyboardEvent) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleSaveSheet(e as any);
+                        } else if (e.key === 'Escape') {
+                          e.preventDefault();
+                          handleCancelEdit(e as any);
+                        }
+                      };
+
+                      return (
+                        <div
+                          key={sheet.id}
+                          className={cn(
+                            "w-full flex items-center gap-2 px-3 py-2.5 rounded-md transition-colors group",
+                            isActive && !isEditing
+                              ? "bg-primary text-primary-foreground"
+                              : "hover:bg-muted text-foreground"
+                          )}
+                        >
+                          <FileText className={cn("h-4 w-4 flex-shrink-0", isActive && !isEditing ? "text-primary-foreground" : "text-muted-foreground")} />
+                          {isEditing ? (
+                            <div className="flex-1 flex items-center gap-1">
+                              <Input
+                                value={editSheetName}
+                                onChange={(e) => setEditSheetName(e.target.value)}
+                                onKeyDown={handleKeyDown}
+                                onClick={(e) => e.stopPropagation()}
+                                className="h-7 text-sm"
+                                autoFocus
+                              />
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={handleSaveSheet}
+                                className="h-6 w-6"
+                              >
+                                <Check className="h-3 w-3" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={handleCancelEdit}
+                                className="h-6 w-6"
+                              >
+                                <X className="h-3 w-3" />
+                              </Button>
+                            </div>
+                          ) : (
+                            <>
+                              <button
+                                onClick={() => setActiveSheetId(sheet.id)}
+                                className="flex-1 min-w-0 text-left"
+                              >
+                                <div className={cn("font-medium text-sm truncate", isActive && "text-primary-foreground")}>
+                                  {sheet.name}
+                                </div>
+                                <div className={cn("text-xs truncate", isActive ? "text-primary-foreground/80" : "text-muted-foreground")}>
+                                  {sheet.charts.length} chart{sheet.charts.length !== 1 ? 's' : ''}
+                                </div>
+                              </button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={handleStartEdit}
+                                className={cn("h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0", isActive && "text-primary-foreground")}
+                                aria-label="Rename sheet"
+                              >
+                                <Edit2 className="h-3 w-3" />
+                              </Button>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
             </div>
-          )}
+            
+            {/* Collapsed Sidebar Toggle Button */}
+            {!isSheetSidebarOpen && (
+              <div className="flex-shrink-0 border-r border-border">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-full w-8 rounded-none"
+                  onClick={() => setIsSheetSidebarOpen(true)}
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+              </div>
+            )}
+          </>
+        )}
+
+        <div className="flex-1 min-h-0 flex flex-col gap-8 px-4 pb-8 lg:px-8 overflow-hidden">
+          <div className="flex-shrink-0">
+            <DashboardSectionNav
+              sections={sections.map((section) => ({
+                id: section.id,
+                title: section.title,
+                count: section.tiles.length,
+              }))}
+              activeSectionId={activeSection?.id || sheets[0]?.id || 'overview'}
+              onSelect={(sectionId) => setActiveSheetId(sectionId)}
+            />
+          </div>
+
+          <div className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden">
+            {activeSection ? (
+              <section
+                key={activeSection.id}
+                id={`section-${activeSection.id}`}
+                className="space-y-4"
+                data-dashboard-section={activeSection.id}
+              >
+                <div>
+                  <h2 className="text-lg font-semibold text-foreground">{activeSection.title}</h2>
+                  {activeSection.description && (
+                    <p className="text-sm text-muted-foreground">{activeSection.description}</p>
+                  )}
+                </div>
+
+                <DashboardTiles
+                  dashboardId={dashboard.id}
+                  tiles={activeSection.tiles}
+                  onDeleteChart={(chartIndex) => {
+                    const sheetIdToUse = currentSheetId || (sheets.length > 0 ? sheets[0].id : undefined);
+                    console.log('Deleting chart:', { chartIndex, sheetId: sheetIdToUse, activeSheetId, sheets });
+                    onDeleteChart(chartIndex, sheetIdToUse || undefined);
+                  }}
+                  filtersByTile={tileFilters}
+                  onTileFiltersChange={handleTileFiltersChange}
+                />
+              </section>
+            ) : (
+              <div className="rounded-lg border border-dashed border-border p-12 text-center text-sm text-muted-foreground">
+                Select a section to get started.
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>

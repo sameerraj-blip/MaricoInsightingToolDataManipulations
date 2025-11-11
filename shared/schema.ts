@@ -210,13 +210,23 @@ export interface SessionData {
 }
 
 // Dashboards
+export const dashboardSheetSchema = z.object({
+  id: z.string(),
+  name: z.string().min(1),
+  charts: z.array(chartSpecSchema),
+  order: z.number().optional(),
+});
+
+export type DashboardSheet = z.infer<typeof dashboardSheetSchema>;
+
 export const dashboardSchema = z.object({
   id: z.string(),
   username: z.string(),
   name: z.string(),
   createdAt: z.number(),
   updatedAt: z.number(),
-  charts: z.array(chartSpecSchema),
+  charts: z.array(chartSpecSchema), // Keep for backward compatibility
+  sheets: z.array(dashboardSheetSchema).optional(), // New: multiple sheets
 });
 
 export type Dashboard = z.infer<typeof dashboardSchema>;
@@ -228,12 +238,14 @@ export const createDashboardRequestSchema = z.object({
 
 export const addChartToDashboardRequestSchema = z.object({
   chart: chartSpecSchema,
+  sheetId: z.string().optional(), // Optional: specify which sheet to add to
 });
 
 export const removeChartFromDashboardRequestSchema = z.object({
   index: z.number().optional(),
   title: z.string().optional(),
   type: z.enum(["line", "bar", "scatter", "pie", "area"]).optional(),
+  sheetId: z.string().optional(), // Optional: specify which sheet to remove from
 }).refine((data) => data.index !== undefined || data.title !== undefined || data.type !== undefined, {
   message: "Provide index or title/type to remove a chart",
 });

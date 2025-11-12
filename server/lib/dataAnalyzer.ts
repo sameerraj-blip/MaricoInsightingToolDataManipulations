@@ -1044,8 +1044,125 @@ export async function answerQuestion(
   const wantsOnlyNegative = /\b(only\s+negative|negative\s+only|just\s+negative|dont\s+include\s+positive|don't\s+include\s+positive|no\s+positive|exclude\s+positive|filter\s+negative|show\s+only\s+negative)\b/i.test(question);
   const correlationFilter = wantsOnlyPositive ? 'positive' : wantsOnlyNegative ? 'negative' : 'all';
 
-  // Classify the question
+  // CRITICAL: Detect correlation requests even when chart type is specified
+  // This handles queries like "bar plot for showing the correlation between X and Y"
+  const mentionsCorrelation = /\bcorrelation\s+(between|of|with)\b/i.test(question);
   const allColumns = summary.columns.map(c => c.name);
+  
+  if (mentionsCorrelation) {
+    console.log('🔍 Correlation detected in query, extracting variables...');
+    
+    // Extract target variable and comparison variables from the question
+    // Pattern: "correlation between [TARGET] and [VARIABLES]"
+    const correlationMatch = question.match(/\bcorrelation\s+(between|of|with)\s+(.+?)\s+(?:and|with)\s+(.+)/i);
+    
+    if (correlationMatch && correlationMatch.length >= 4) {
+      const targetRaw = correlationMatch[2].trim();
+      const variablesRaw = correlationMatch[3].trim();
+      
+      console.log(`   Extracted target: "${targetRaw}"`);
+      console.log(`   Extracted variables: "${variablesRaw}"`);
+      
+      // Find target column
+      const targetCol = findMatchingColumn(targetRaw, allColumns);
+      
+      if (!targetCol) {
+        return {
+          answer: `I couldn't find a column matching "${targetRaw}". Available columns: ${allColumns.join(', ')}`
+        };
+      }
+      
+      const targetIsNumeric = summary.numericColumns.includes(targetCol);
+      if (!targetIsNumeric) {
+        return {
+          answer: `"${targetCol}" is not a numeric column. Correlation analysis requires numeric variables.`
+        };
+      }
+      
+      // Determine which columns to analyze
+      let comparisonColumns: string[] = [];
+      
+      // Check if user asked for "adstocked variables" or similar
+      const wantsAdstocked = /\badstocked\s+variables?\b/i.test(variablesRaw);
+      const wantsSpecificType = /\b(adstocked|reach|grp|tom)\s+variables?\b/i.test(variablesRaw);
+      
+      if (wantsAdstocked || wantsSpecificType) {
+        // Filter to only columns containing the keyword
+        const keyword = wantsAdstocked ? 'adstock' : variablesRaw.match(/\b(adstocked|reach|grp|tom)\b/i)?.[1]?.toLowerCase() || 'adstock';
+        comparisonColumns = summary.numericColumns.filter(col => 
+          col !== targetCol && 
+          col.toLowerCase().includes(keyword)
+        );
+        console.log(`   Filtered to ${keyword} columns: [${comparisonColumns.join(', ')}]`);
+      } else {
+        // Try to find specific variable mentioned
+        const specificCol = findMatchingColumn(variablesRaw, allColumns);
+        if (specificCol && summary.numericColumns.includes(specificCol)) {
+          comparisonColumns = [specificCol];
+        } else {
+          // Default: analyze all numeric columns except target
+          comparisonColumns = summary.numericColumns.filter(col => col !== targetCol);
+        }
+      }
+      
+      if (comparisonColumns.length === 0) {
+        return {
+          answer: `No matching numeric columns found for "${variablesRaw}". Available numeric columns: ${summary.numericColumns.join(', ')}`
+        };
+      }
+      
+      console.log(`   Analyzing correlation: ${targetCol} vs [${comparisonColumns.join(', ')}]`);
+      
+      // Perform correlation analysis
+      const { charts, insights } = await analyzeCorrelations(
+        workingData,
+        targetCol,
+        comparisonColumns,
+        correlationFilter
+      );
+      
+      // Update bar chart title to be more specific if adstocked variables were requested
+      let enrichedCharts = charts;
+      if (wantsAdstocked && Array.isArray(charts)) {
+        enrichedCharts = charts.map((c: any) => {
+          if (c.type === 'bar' && c.x === 'variable' && c.y === 'correlation') {
+            return {
+              ...c,
+              title: `Correlation Between ${targetCol} and Adstocked Variables`,
+            };
+          }
+          return c;
+        });
+      }
+      
+      // Enrich charts with insights if needed
+      try {
+        const needsEnrichment = Array.isArray(enrichedCharts) && enrichedCharts.some((c: any) => !('keyInsight' in c) || !('recommendation' in c));
+        if (needsEnrichment) {
+          enrichedCharts = await Promise.all(
+            enrichedCharts.map(async (c: any) => {
+              const chartInsights = await generateChartInsights(c, c.data || [], summary);
+              return { ...c, keyInsight: c.keyInsight ?? chartInsights.keyInsight, recommendation: c.recommendation ?? chartInsights.recommendation } as ChartSpec;
+            })
+          );
+        }
+      } catch (e) {
+        console.error('Failed to enrich correlation charts:', e);
+      }
+      
+      const filterNote = correlationFilter === 'positive' 
+        ? ' I\'ve filtered to show only positive correlations as requested.' 
+        : correlationFilter === 'negative' 
+        ? ' I\'ve filtered to show only negative correlations as requested.' 
+        : '';
+      
+      const answer = `I've analyzed the correlation between ${targetCol} and ${wantsAdstocked ? 'the adstocked variables' : variablesRaw}.${filterNote} The bar chart shows the correlation strength for each variable, sorted in ascending order.`;
+      
+      return withNotes({ answer, charts: enrichedCharts, insights });
+    }
+  }
+
+  // Classify the question
   const classification = await classifyQuestion(question, summary.numericColumns);
 
   // If it's a correlation question, use correlation analyzer
@@ -2814,6 +2931,26 @@ TECHNICAL RULES:
           const availableColumns = Object.keys(workingData[0]);
           console.log(`   Available columns after aggregation: [${availableColumns.join(', ')}]`);
           
+          // Check if the x-axis column exists (should be in groupBy)
+          const xColumnExists = availableColumns.some(col => 
+            col === spec.x || col.toLowerCase() === spec.x.toLowerCase()
+          );
+          
+          if (!xColumnExists && parsedQuery.groupBy && parsedQuery.groupBy.length > 0) {
+            // Try to match x-axis to groupBy columns
+            const matchedX = parsedQuery.groupBy.find(gbCol => 
+              gbCol.toLowerCase() === spec.x.toLowerCase() ||
+              spec.x.toLowerCase().includes(gbCol.toLowerCase()) ||
+              gbCol.toLowerCase().includes(spec.x.toLowerCase())
+            );
+            
+            if (matchedX && availableColumns.includes(matchedX)) {
+              console.log(`   ✅ Matched X-axis from "${spec.x}" to "${matchedX}"`);
+              spec.x = matchedX;
+              spec.xLabel = matchedX;
+            }
+          }
+          
           // Check if the y-axis column exists in the data (exact match or case-insensitive)
           const yColumnExists = availableColumns.some(col => 
             col === spec.y || col.toLowerCase() === spec.y.toLowerCase()
@@ -2826,45 +2963,111 @@ TECHNICAL RULES:
             console.log(`   Looking for aggregated column matching "${spec.y}"...`);
             let foundMatch = false;
             
-            // Look for aggregated columns that match the original column name
+            // Normalize the spec.y for better matching (remove spaces, handle variations)
+            const normalizedSpecY = spec.y.toLowerCase().replace(/\s+/g, '').replace(/[_-]/g, '');
+            
+            // First, try to match against aggregated columns directly
             for (const agg of parsedQuery.aggregations) {
               const aggColumnName = agg.alias || `${agg.column}_${agg.operation}`;
               console.log(`   Checking aggregation: ${agg.column} -> ${aggColumnName}`);
               
-              if (availableColumns.includes(aggColumnName)) {
-                // Check if the original column name matches spec.y
-                const columnMatches = agg.column.toLowerCase() === spec.y.toLowerCase() || 
-                    spec.y.toLowerCase().includes(agg.column.toLowerCase()) ||
-                    agg.column.toLowerCase().includes(spec.y.toLowerCase());
+              // Check if this aggregated column exists in available columns
+              const exactMatch = availableColumns.find(col => 
+                col === aggColumnName || col.toLowerCase() === aggColumnName.toLowerCase()
+              );
+              
+              if (exactMatch) {
+                // Normalize for comparison
+                const normalizedAggColumn = agg.column.toLowerCase().replace(/\s+/g, '').replace(/[_-]/g, '');
+                const normalizedAggColumnName = exactMatch.toLowerCase().replace(/\s+/g, '').replace(/[_-]/g, '');
+                
+                // Check if the original column name matches spec.y (with fuzzy matching)
+                const columnMatches = 
+                    normalizedAggColumn === normalizedSpecY ||
+                    normalizedSpecY.includes(normalizedAggColumn) ||
+                    normalizedAggColumn.includes(normalizedSpecY) ||
+                    // Also check if spec.y contains key terms from the aggregated column
+                    (normalizedSpecY.includes('adstock') && normalizedAggColumn.includes('adstock')) ||
+                    (normalizedSpecY.includes('grp') && normalizedAggColumn.includes('grp')) ||
+                    (normalizedSpecY.includes('total') && normalizedAggColumnName.includes('sum')) ||
+                    // Match if both contain same key business terms
+                    (normalizedSpecY.includes('adstock') && normalizedSpecY.includes('grp') && 
+                     normalizedAggColumn.includes('adstock') && normalizedAggColumn.includes('grp'));
                 
                 if (columnMatches) {
-                  console.log(`   ✅ Match found! Updating chart y-axis from "${spec.y}" to "${aggColumnName}"`);
-                  spec.y = aggColumnName;
-                  spec.yLabel = aggColumnName;
+                  console.log(`   ✅ Match found! Updating chart y-axis from "${spec.y}" to "${exactMatch}"`);
+                  spec.y = exactMatch;
+                  spec.yLabel = exactMatch;
                   foundMatch = true;
                   break;
                 }
               }
             }
             
-            // If no match found, try to use the first aggregated column as fallback
-            if (!foundMatch && availableColumns.length > 0) {
-              // Find the first aggregated column (not in groupBy)
+            // If still no match, try fuzzy matching against all available columns
+            if (!foundMatch) {
               const groupByColumns = new Set(parsedQuery.groupBy || []);
-              const aggregatedCol = availableColumns.find(col => 
-                !groupByColumns.has(col) && 
-                parsedQuery.aggregations!.some(agg => {
+              
+              // Extract key terms from spec.y
+              const keyTerms: string[] = [];
+              const importantTerms = ['adstock', 'grp', 'reach', 'tom', 'total', 'sum', 'pangrp', 'ngrp'];
+              for (const term of importantTerms) {
+                if (normalizedSpecY.includes(term)) {
+                  keyTerms.push(term);
+                }
+              }
+              
+              // Try to find a column that contains matching key terms
+              const fuzzyMatch = availableColumns.find(col => {
+                if (groupByColumns.has(col)) return false;
+                const normalizedCol = col.toLowerCase().replace(/\s+/g, '').replace(/[_-]/g, '');
+                
+                // If we have key terms, check if column contains at least one matching term
+                if (keyTerms.length > 0) {
+                  return keyTerms.some(term => normalizedCol.includes(term));
+                }
+                
+                // Fallback: check if column contains any common business terms
+                return normalizedCol.includes('adstock') || normalizedCol.includes('grp') || normalizedCol.includes('sum');
+              });
+              
+              if (fuzzyMatch) {
+                console.log(`   ✅ Fuzzy match found! Updating chart y-axis from "${spec.y}" to "${fuzzyMatch}"`);
+                spec.y = fuzzyMatch;
+                spec.yLabel = fuzzyMatch;
+                foundMatch = true;
+              }
+            }
+            
+            // Final fallback: use the first aggregated column (not in groupBy)
+            if (!foundMatch && availableColumns.length > 0) {
+              const groupByColumns = new Set(parsedQuery.groupBy || []);
+              
+              // First try: find any column that matches an aggregation pattern
+              let aggregatedCol = availableColumns.find(col => {
+                if (groupByColumns.has(col)) return false;
+                // Check if it matches aggregation naming pattern (column_operation or has _sum, _mean, etc.)
+                return col.includes('_sum') || col.includes('_mean') || col.includes('_avg') || 
+                       col.includes('_count') || parsedQuery.aggregations!.some(agg => {
                   const aggName = agg.alias || `${agg.column}_${agg.operation}`;
-                  return col === aggName;
-                })
-              );
+                  return col === aggName || col.toLowerCase() === aggName.toLowerCase();
+                });
+              });
+              
+              // If still no match, just use the first non-groupBy column
+              if (!aggregatedCol) {
+                aggregatedCol = availableColumns.find(col => !groupByColumns.has(col));
+              }
               
               if (aggregatedCol) {
-                console.log(`   ⚠️ No exact match found, using first aggregated column as fallback: "${aggregatedCol}"`);
+                console.log(`   ⚠️ Using fallback aggregated column: "${aggregatedCol}"`);
                 spec.y = aggregatedCol;
                 spec.yLabel = aggregatedCol;
+                foundMatch = true;
               } else {
                 console.warn(`   ❌ Could not find any aggregated column to use for y-axis`);
+                console.warn(`   Available columns: [${availableColumns.join(', ')}]`);
+                console.warn(`   GroupBy columns: [${Array.from(groupByColumns).join(', ')}]`);
               }
             }
           }

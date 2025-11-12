@@ -190,14 +190,18 @@ export async function analyzeCorrelations(
     });
     console.log('=== END BAR CHART DEBUG ===');
     
+    // Sort by correlation value (ascending) for better visualization
+    // This shows negative correlations on left, positive on right
+    const sortedForBar = [...topCorrelations].sort((a, b) => a.correlation - b.correlation);
+    
     const correlationBarChart: ChartSpec = {
       type: 'bar',
-      title: `Factors Affecting ${targetVariable}`,
+      title: `Correlation Between ${targetVariable} and Variables`,
       x: 'variable',
       y: 'correlation',
       xLabel: 'variable',
       yLabel: 'correlation',
-      data: topCorrelations.map((corr) => ({
+      data: sortedForBar.map((corr) => ({
         variable: corr.variable,
         correlation: corr.correlation, // CRITICAL: Keep original sign (positive/negative)
       })),

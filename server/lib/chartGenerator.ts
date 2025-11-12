@@ -163,21 +163,89 @@ export function processChartData(
   }
 
   if (type === 'pie') {
-    // Aggregate and get top 5 categories
-    console.log(`   Processing pie chart with aggregation: ${aggregate || 'sum'}`);
-    const aggregated = aggregateData(data, xCol, yCol, aggregate || 'sum');
-    console.log(`   Aggregated data points: ${aggregated.length}`);
+    // Check if data is already aggregated (if number of unique x values equals number of rows)
+    const uniqueXValues = new Set(data.map(row => String(row[xCol])));
+    const isAlreadyAggregated = uniqueXValues.size === data.length;
     
-    const result = aggregated
-      .sort((a, b) => toNumber(b[yCol]) - toNumber(a[yCol]))
-      .slice(0, 5);
+    let allData: Record<string, any>[];
     
-    console.log(`   Pie chart result: ${result.length} segments`);
+    if (isAlreadyAggregated) {
+      // Data is already aggregated, use it directly
+      console.log(`   Pie chart: Data is already aggregated (${data.length} unique groups), using as-is`);
+      allData = data
+        .map(row => ({
+          [xCol]: row[xCol],
+          [yCol]: toNumber(row[yCol]),
+        }))
+        .filter(row => !isNaN(row[yCol]))
+        .sort((a, b) => toNumber(b[yCol]) - toNumber(a[yCol]));
+    } else {
+      // Need to aggregate
+      console.log(`   Processing pie chart with aggregation: ${aggregate || 'sum'}`);
+      const aggregated = aggregateData(data, xCol, yCol, aggregate || 'sum');
+      console.log(`   Aggregated data points: ${aggregated.length}`);
+      
+      allData = aggregated
+        .sort((a, b) => toNumber(b[yCol]) - toNumber(a[yCol]));
+    }
+    
+    // Calculate total of all items to ensure percentages add up to 100%
+    const total = allData.reduce((sum, row) => sum + toNumber(row[yCol]), 0);
+    console.log(`   Total value for all categories: ${total}`);
+    
+    // Take top 5 items
+    const top5 = allData.slice(0, 5);
+    const remaining = allData.slice(5);
+    
+    // Calculate sum of remaining items
+    const remainingSum = remaining.reduce((sum, row) => sum + toNumber(row[yCol]), 0);
+    
+    // Build result: top 5 + "Others" category if there are remaining items
+    const result = [...top5];
+    
+    if (remaining.length > 0 && remainingSum > 0) {
+      // Create "Others" category with the sum of remaining items
+      const othersLabel = `Other ${remaining.length > 1 ? `${remaining.length} items` : 'item'}`;
+      result.push({
+        [xCol]: othersLabel,
+        [yCol]: remainingSum,
+      });
+      console.log(`   Added "Others" category with ${remaining.length} items, sum: ${remainingSum}`);
+    }
+    
+    // Verify total (should be 100% of original total)
+    const resultTotal = result.reduce((sum, row) => sum + toNumber(row[yCol]), 0);
+    console.log(`   Pie chart result: ${result.length} segments (top 5 + ${remaining.length > 0 ? 'Others' : 'none'})`);
+    console.log(`   Result total: ${resultTotal}, Original total: ${total}, Match: ${Math.abs(resultTotal - total) < 0.01 ? '✅' : '⚠️'}`);
+    
     return result;
   }
 
   if (type === 'bar') {
-    // Aggregate and get top 10 for bar charts
+    // Check if this is a correlation bar chart (has 'variable' and 'correlation' columns)
+    // Correlation bar charts already have processed data and shouldn't be aggregated
+    const isCorrelationBarChart = (xCol === 'variable' && yCol === 'correlation') ||
+                                   (data.length > 0 && data[0].hasOwnProperty('variable') && data[0].hasOwnProperty('correlation'));
+    
+    if (isCorrelationBarChart) {
+      // Correlation bar chart - data is already processed, just sort and return
+      console.log(`   Processing correlation bar chart (data already processed)`);
+      const result = data
+        .map(row => ({
+          variable: row.variable || row[xCol],
+          correlation: toNumber(row.correlation || row[yCol]),
+        }))
+        .filter(row => !isNaN(row.correlation))
+        .sort((a, b) => {
+          // Sort by absolute correlation value (descending) to show strongest correlations first
+          return Math.abs(b.correlation) - Math.abs(a.correlation);
+        });
+      
+      console.log(`   Correlation bar chart result: ${result.length} bars`);
+      return result;
+    }
+    
+    // Regular bar chart - aggregate and get top 10
     console.log(`   Processing bar chart with aggregation: ${aggregate || 'sum'}`);
     const aggregated = aggregateData(data, xCol, yCol, aggregate || 'sum');
     console.log(`   Aggregated data points: ${aggregated.length}`);

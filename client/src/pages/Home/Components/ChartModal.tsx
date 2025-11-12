@@ -422,6 +422,15 @@ export function ChartModal({
                 }}
                 itemStyle={{ color: 'hsl(var(--foreground))', fontSize: '14px' }}
               />
+              <Legend 
+                verticalAlign="bottom" 
+                height={36}
+                iconType="circle"
+                wrapperStyle={{ 
+                  fontSize: '14px',
+                  color: 'hsl(var(--foreground))'
+                }}
+              />
             </PieChart>
           </ResponsiveContainer>
         );

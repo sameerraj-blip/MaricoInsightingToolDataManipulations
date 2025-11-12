@@ -753,6 +753,12 @@ export function ChartRenderer({
                 ))}
               </Pie>
               <Tooltip />
+              <Legend 
+                verticalAlign="bottom" 
+                height={36}
+                iconType="circle"
+                wrapperStyle={{ fontSize: '12px' }}
+              />
             </PieChart>
           </ResponsiveContainer>
         );

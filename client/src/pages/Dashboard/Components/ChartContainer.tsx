@@ -22,7 +22,6 @@ export function ChartContainer({ chart, index, dashboardId, sheetId, onDelete, o
   const [position, setPosition] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const [isEditingInsight, setIsEditingInsight] = useState(false);
-  const [isEditingRecommendation, setIsEditingRecommendation] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const nodeRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -108,34 +107,6 @@ export function ChartContainer({ chart, index, dashboardId, sheetId, onDelete, o
     }
   };
 
-  const handleSaveRecommendation = async (text: string) => {
-    setIsSaving(true);
-    try {
-      await updateChartInsightOrRecommendation(
-        dashboardId,
-        index,
-        { recommendation: text },
-        sheetId
-      );
-      setIsEditingRecommendation(false);
-      toast({
-        title: 'Success',
-        description: 'Recommendation updated successfully.',
-      });
-      // Refetch dashboards to get the updated data
-      if (onUpdate) {
-        await onUpdate();
-      }
-    } catch (error: any) {
-      toast({
-        title: 'Error',
-        description: error?.message || 'Failed to update recommendation',
-        variant: 'destructive',
-      });
-    } finally {
-      setIsSaving(false);
-    }
-  };
 
   return (
     <Draggable
@@ -244,27 +215,8 @@ export function ChartContainer({ chart, index, dashboardId, sheetId, onDelete, o
               </div>
             )}
 
-            {/* Suggestions Section - 15% of content area (or more if no insights) */}
-            {chart.recommendation && (
-              <div
-                className="flex-shrink-0"
-                style={{
-                  flexBasis: chart.keyInsight ? '15%' : '40%',
-                  minHeight: chart.keyInsight ? '15%' : '40%',
-                  padding: '16px',
-                  overflow: 'hidden',
-                }}
-              >
-                <InsightRecommendationTile 
-                  variant="recommendation" 
-                  text={chart.recommendation}
-                  onEdit={() => setIsEditingRecommendation(true)}
-                />
-              </div>
-            )}
-
-            {/* If no insights or recommendations, expand chart to fill remaining space */}
-            {!chart.keyInsight && !chart.recommendation && (
+            {/* If no insights, expand chart to fill remaining space */}
+            {!chart.keyInsight && (
               <div
                 className="flex-shrink-0"
                 style={{
@@ -283,16 +235,6 @@ export function ChartContainer({ chart, index, dashboardId, sheetId, onDelete, o
           onSave={handleSaveInsight}
           title="Key Insight"
           initialText={chart.keyInsight}
-          isLoading={isSaving}
-        />
-      )}
-      {chart.recommendation && (
-        <EditInsightModal
-          isOpen={isEditingRecommendation}
-          onClose={() => setIsEditingRecommendation(false)}
-          onSave={handleSaveRecommendation}
-          title="Suggestion"
-          initialText={chart.recommendation}
           isLoading={isSaving}
         />
       )}

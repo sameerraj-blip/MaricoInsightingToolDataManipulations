@@ -237,9 +237,33 @@ export function DashboardModal({ isOpen, onClose, chart }: DashboardModalProps) 
               {/* Actions */}
               <div className="flex gap-2 pt-4">
                 <Button
-                  onClick={() => {
+                  onClick={async () => {
                     if (newDashboardName.trim()) {
-                      setStep('confirm');
+                      // Create new dashboard and add chart directly, skip confirmation step
+                      try {
+                        console.log('Creating new dashboard:', newDashboardName.trim());
+                        const newDashboard = await createDashboard(newDashboardName.trim());
+                        // New dashboards have a default "Overview" sheet, so we can add directly
+                        await addChartToDashboard(newDashboard.id, chart);
+                        toast({
+                          title: 'Success',
+                          description: `Dashboard "${newDashboardName.trim()}" created and chart added successfully.`,
+                        });
+                        onClose();
+                      } catch (error: any) {
+                        console.error('Failed to create dashboard:', error);
+                        const errorMessage = error?.message || 'Failed to create dashboard';
+                        toast({
+                          title: 'Error',
+                          description: errorMessage,
+                          variant: 'destructive',
+                        });
+                        // If it's a duplicate name error, keep the modal open so user can change the name
+                        if (errorMessage.includes('already exists')) {
+                          // Don't close the modal, let user try again with a different name
+                          return;
+                        }
+                      }
                     }
                   }}
                   disabled={!newDashboardName.trim()}

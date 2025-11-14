@@ -55,6 +55,7 @@ export interface ParsedQuery {
   variables?: string[];
   secondaryVariables?: string[];
   groupBy?: string[];
+  dateAggregationPeriod?: 'day' | 'month' | 'monthOnly' | 'quarter' | 'year' | null;
   timeFilters?: TimeFilter[];
   valueFilters?: ValueFilter[];
   exclusionFilters?: ExclusionFilter[];

@@ -246,7 +246,7 @@ export async function analyzeCorrelations(
     const chartsWithInsights = await Promise.all(
       charts.map(async (c) => {
         const chartInsights = await generateChartInsights(c, c.data || [], summaryStub, chatInsights);
-        return { ...c, keyInsight: chartInsights.keyInsight, recommendation: chartInsights.recommendation } as ChartSpec;
+        return { ...c, keyInsight: chartInsights.keyInsight } as ChartSpec;
       })
     );
     charts.splice(0, charts.length, ...chartsWithInsights);
@@ -432,7 +432,7 @@ Write 5-7 insights. Each must include:
    - Use specific numbers from the quantified statistics above (optimal ranges, percentiles, averages)
    - NEVER use percentile labels like "P75", "P90", "P25", "P75 level", "P90 level", "P75 value", "P90 value" - ONLY use the numeric values themselves
    - Example format: "**Current suggestion:** [explain relationship]. **Quantified Action:** To improve ${targetVariable} to [target value], adjust [factor] from current average ([current]) to optimal range ([optimal range]) or target value ([target value])."
-5. Reminder that correlation != causation
+5. End with: "Reminder: Correlation does not imply causation."
 
 Output JSON only: {"insights":[{"text":"..."}]}`;
 
@@ -441,7 +441,7 @@ Output JSON only: {"insights":[{"text":"..."}]}`;
     messages: [
       {
         role: 'system',
-        content: 'You are a senior data analyst providing detailed correlation insights. Be specific, use correlation values, and provide actionable suggestions. Output valid JSON.',
+        content: 'You are a senior data analyst providing detailed correlation insights. Be specific, use correlation values, and provide actionable suggestions. Always end correlation insights with exactly: "Reminder: Correlation does not imply causation." (never use "correlation != causation" or variations). Output valid JSON.',
       },
       {
         role: 'user',

@@ -406,16 +406,31 @@ export const applyChartFilters = <T extends Record<string, unknown>>(
         const parsed = normalizeDateValue(value);
         if (!parsed) return false;
 
+        // Normalize dates to start of day for consistent comparison
+        const normalizeToStartOfDay = (d: Date) => {
+          const normalized = new Date(d);
+          normalized.setHours(0, 0, 0, 0);
+          return normalized;
+        };
+
+        const parsedNormalized = normalizeToStartOfDay(parsed);
+
         if (selection.start) {
           const startDate = normalizeDateValue(selection.start);
           if (!startDate) return false;
-          if (parsed < startDate) return false;
+          const startNormalized = normalizeToStartOfDay(startDate);
+          // Use <= to ensure inclusive lower bound (dates equal to start are included)
+          if (parsedNormalized < startNormalized) return false;
         }
 
         if (selection.end) {
           const endDate = normalizeDateValue(selection.end);
           if (!endDate) return false;
-          if (parsed > endDate) return false;
+          // For end date, set to end of day to ensure inclusive upper bound
+          const endNormalized = new Date(endDate);
+          endNormalized.setHours(23, 59, 59, 999);
+          // Use <= to ensure inclusive upper bound (dates equal to or before end are included)
+          if (parsedNormalized > endNormalized) return false;
         }
 
         return true;

@@ -96,16 +96,6 @@ export function DashboardView({ dashboard, onBack, onDeleteChart, isRefreshing =
         });
       }
 
-      if (chart.recommendation) {
-        tiles.push({
-          kind: 'action',
-          id: `action-${index}`,
-          title: 'Recommended Action',
-          recommendation: chart.recommendation,
-          relatedChartId: chartId,
-        });
-      }
-
       return tiles;
     });
 
@@ -129,7 +119,7 @@ export function DashboardView({ dashboard, onBack, onDeleteChart, isRefreshing =
     const map = new Map<string, DashboardTile>();
     sections.forEach((section) => {
       section.tiles.forEach((tile) => {
-        if ((tile.kind === 'insight' || tile.kind === 'action') && tile.relatedChartId) {
+        if (tile.kind === 'insight' && tile.relatedChartId) {
           map.set(`${tile.kind}-${tile.relatedChartId}`, tile);
         }
       });
@@ -195,9 +185,9 @@ export function DashboardView({ dashboard, onBack, onDeleteChart, isRefreshing =
       setNewSheetName('');
       
       // Refetch to get updated dashboard
-      if (onRefresh) {
-        await onRefresh();
-      }
+    if (onRefresh) {
+      await onRefresh();
+    }
       await refetchDashboards();
     } catch (error: any) {
       toast({
@@ -264,35 +254,6 @@ export function DashboardView({ dashboard, onBack, onDeleteChart, isRefreshing =
         const sheet = sheets.find(s => s.id === sheetId);
         if (!sheet || sheet.charts.length === 0) continue;
 
-        // Add a sheet name/title slide before each sheet's content
-        if (sheetsToExport.length > 1) {
-          const titleSlide = pptx.addSlide();
-          titleSlide.addText(sheet.name, {
-            x: 0.5,
-            y: 2.5,
-            w: 9,
-            h: 1,
-            fontSize: 28,
-            bold: true,
-            color: '1F2937',
-            align: 'center',
-          });
-          // Add chart count subtitle
-          titleSlide.addText(
-            `${sheet.charts.length} chart${sheet.charts.length !== 1 ? 's' : ''}`,
-            {
-              x: 0.5,
-              y: 3.8,
-              w: 9,
-              h: 0.5,
-              fontSize: 16,
-              color: '6B7280',
-              align: 'center',
-            }
-          );
-          slideIndex++;
-        }
-
         // Switch to this sheet to render its charts
         setActiveSheetId(sheetId);
         
@@ -311,90 +272,80 @@ export function DashboardView({ dashboard, onBack, onDeleteChart, isRefreshing =
         for (let chartIndex = 0; chartIndex < Math.min(sheet.charts.length, chartNodes.length); chartIndex++) {
           const chart = sheet.charts[chartIndex];
           const chartNode = chartNodes[chartIndex];
-          const slide = pptx.addSlide();
+        const slide = pptx.addSlide();
 
-          let imgData: string | undefined;
-          if (chartNode) {
-            imgData = await htmlToImage.toPng(chartNode, {
-              cacheBust: true,
-              backgroundColor: '#FFFFFF',
-              style: { boxShadow: 'none' },
-            });
-          }
-
-          const leftPad = 0.5;
-          const topPad = 0.6;
-          const imgW = 7.0;
-          const imgH = 4.0;
-
-          if (imgData) {
-            slide.addImage({ data: imgData, x: leftPad, y: topPad, w: imgW, h: imgH });
-          }
-
-          const rightX = leftPad + imgW + 0.4;
-          const colW = 3.2;
-
-          // Add sheet name if multiple sheets
-          if (sheetsToExport.length > 1) {
-            slide.addText(sheet.name, {
-              x: rightX,
-              y: topPad - 0.3,
-              w: colW,
-              fontSize: 10,
-              color: '6B7280',
-              italic: true,
-            });
-          }
-
-          slide.addText(chart.title || `Chart ${chartIndex + 1}`, {
-            x: rightX,
-            y: topPad + (sheetsToExport.length > 1 ? 0.1 : 0),
-            w: colW,
-            fontSize: 16,
-            bold: true,
-            color: '1F2937',
+        let imgData: string | undefined;
+        if (chartNode) {
+          // Increase quality by using higher pixel ratio for better resolution
+          imgData = await htmlToImage.toPng(chartNode, {
+            cacheBust: true,
+            backgroundColor: '#FFFFFF',
+            style: { boxShadow: 'none' },
+            pixelRatio: 5, // Triple the resolution for crisp, high-quality images
+            quality: 1.0, // Maximum quality (0-1 range)
           });
+        }
 
-          if (chart.keyInsight) {
-            slide.addText('Key Insight', {
-              x: rightX,
-              y: topPad + 0.4 + (sheetsToExport.length > 1 ? 0.1 : 0),
-              w: colW,
-              fontSize: 12,
-              bold: true,
-              color: '0B63F6',
-            });
-            slide.addText(chart.keyInsight, {
-              x: rightX,
-              y: topPad + 0.7 + (sheetsToExport.length > 1 ? 0.1 : 0),
-              w: colW,
-              h: 2.0,
-              fontSize: 11,
-              color: '111827',
-              wrap: true,
-            });
-          }
+        // Layout matching Keynote style: title at top, chart left, text right
+        const slideWidth = 10; // Standard slide width in inches
+        const leftPad = 0.3;
+        const topPad = 0.3; // Start higher for title
+        const titleHeight = 0.5;
+        
+        // Chart dimensions - left side
+        const imgW = 5.5; // Chart width
+        const imgH = 4.0; // Chart height
+        const chartTopY = topPad + titleHeight + 0.2; // Below title
 
-          if (chart.recommendation) {
-            const recY = topPad + 2.9 + (sheetsToExport.length > 1 ? 0.1 : 0);
-            slide.addText('Recommendation', {
-              x: rightX,
-              y: recY,
-              w: colW,
-              fontSize: 12,
-              bold: true,
-              color: '059669',
-            });
-            slide.addText(chart.recommendation, {
-              x: rightX,
-              y: recY + 0.3,
-              w: colW,
-              h: 1.8,
-              fontSize: 11,
-              color: '111827',
-              wrap: true,
-            });
-          }
+        // Add chart title at the top (centered or left-aligned)
+        slide.addText(chart.title || `Chart ${chartIndex + 1}`, {
+          x: leftPad,
+          y: topPad,
+          w: slideWidth - (leftPad * 2),
+          h: titleHeight,
+          fontSize: 18,
+          bold: true,
+          color: '1F2937',
+          align: 'left',
+          valign: 'middle',
+        });
+
+        // Add chart image on the left
+        if (imgData) {
+          slide.addImage({ data: imgData, x: leftPad, y: chartTopY, w: imgW, h: imgH });
+        }
+
+        // Text sections on the right - aligned with chart top
+        const rightX = leftPad + imgW + 0.4; // Gap between chart and text
+        const colW = slideWidth - rightX - leftPad; // Remaining width
+        let currentY = chartTopY; // Start at same Y as chart
+
+        // Key Insight section
+        if (chart.keyInsight) {
+          slide.addText('Key Insight', {
+            x: rightX,
+            y: currentY,
+            w: colW,
+            fontSize: 13,
+            bold: true,
+            color: '0B63F6',
+            valign: 'top',
+          });
+          currentY += 0.4;
+          
+          slide.addText(chart.keyInsight, {
+            x: rightX,
+            y: currentY,
+            w: colW,
+            h: 1.8, // Height for insight text
+            fontSize: 11,
+            color: '111827',
+            wrap: true,
+            valign: 'top',
+          });
+          currentY += 2.0; // Space for insight text + gap
+        }
+
 
           slideIndex++;
         }
@@ -619,15 +570,15 @@ export function DashboardView({ dashboard, onBack, onDeleteChart, isRefreshing =
                                 </div>
                               </button>
                               <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  onClick={handleStartEdit}
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={handleStartEdit}
                                   className={cn("h-6 w-6 flex-shrink-0", isActive && "text-primary-foreground")}
                                   aria-label="Rename view"
-                                >
-                                  <Edit2 className="h-3 w-3" />
-                                </Button>
+                              >
+                                <Edit2 className="h-3 w-3" />
+                              </Button>
                                 {sheets.length > 1 && (
                                   <Button
                                     variant="ghost"

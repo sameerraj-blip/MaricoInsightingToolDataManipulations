@@ -56,14 +56,13 @@ export const chatWithAI = async (req: Request, res: Response) => {
             const dataForChart = c.data && Array.isArray(c.data)
               ? c.data
               : processChartData(chatDocument.rawData, c);
-            const insights = (!('keyInsight' in c) || !('recommendation' in c))
+            const insights = !('keyInsight' in c)
               ? await generateChartInsights(c, dataForChart, chatDocument.dataSummary, chatLevelInsights)
               : null;
             return {
               ...c,
               data: dataForChart,
               keyInsight: c.keyInsight ?? insights?.keyInsight,
-              recommendation: c.recommendation ?? insights?.recommendation,
             };
           })
         );

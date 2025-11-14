@@ -813,9 +813,11 @@ export function ChartRenderer({
           className={`cursor-pointer ${fillParent ? 'flex h-full flex-col' : ''}`}
           onClick={handleCardClick}
         >
-          <div className="mb-2 flex items-start justify-between gap-2">
-            <h3 className="line-clamp-2 text-sm font-semibold text-foreground">{title}</h3>
-          </div>
+          {!fillParent && (
+            <div className="mb-2 flex items-start justify-between gap-2">
+              <h3 className="line-clamp-2 text-sm font-semibold text-foreground">{title}</h3>
+            </div>
+          )}
 
           {enableFilters && activeFilterChips.length > 0 && (
             <div

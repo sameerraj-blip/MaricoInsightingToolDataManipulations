@@ -170,23 +170,20 @@ export const updateChartInsightOrRecommendationController = async (req: Request,
   try {
     const username = (req.body.username || req.headers['x-user-email'] || 'anonymous@example.com') as string;
     const { dashboardId, chartIndex: chartIndexParam } = req.params as { dashboardId: string; chartIndex: string };
-    const { sheetId, keyInsight, recommendation } = req.body;
+    const { sheetId, keyInsight } = req.body;
     const chartIndex = parseInt(chartIndexParam, 10);
 
     if (isNaN(chartIndex) || chartIndex < 0) {
       return res.status(400).json({ error: 'Valid chartIndex is required' });
     }
 
-    if (keyInsight === undefined && recommendation === undefined) {
-      return res.status(400).json({ error: 'Either keyInsight or recommendation must be provided' });
+    if (keyInsight === undefined) {
+      return res.status(400).json({ error: 'keyInsight must be provided' });
     }
 
-    const updates: { keyInsight?: string; recommendation?: string } = {};
+    const updates: { keyInsight?: string } = {};
     if (keyInsight !== undefined) {
       updates.keyInsight = typeof keyInsight === 'string' ? keyInsight : undefined;
-    }
-    if (recommendation !== undefined) {
-      updates.recommendation = typeof recommendation === 'string' ? recommendation : undefined;
     }
 
     const updated = await updateChartInsightOrRecommendation(

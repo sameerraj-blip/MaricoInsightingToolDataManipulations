@@ -98,6 +98,56 @@ export interface ChatDocument {
   };
 }
 
+// Helper function to generate unique filename with number suffix
+const generateUniqueFileName = async (baseFileName: string, username: string): Promise<string> => {
+  try {
+    // Get all sessions for this user
+    const allSessions = await getAllSessions(username);
+    
+    // Extract base name without extension and any existing number suffix
+    const baseNameMatch = baseFileName.match(/^(.+?)(\s*\(\d+\))?(\.[^.]+)?$/);
+    const baseNameWithoutExt = baseNameMatch ? baseNameMatch[1] : baseFileName;
+    const extension = baseNameMatch && baseNameMatch[3] ? baseNameMatch[3] : '';
+    
+    // Find all sessions with matching base filename (with or without number suffix)
+    const matchingSessions = allSessions.filter(session => {
+      const sessionBaseMatch = session.fileName.match(/^(.+?)(\s*\(\d+\))?(\.[^.]+)?$/);
+      const sessionBaseName = sessionBaseMatch ? sessionBaseMatch[1] : session.fileName;
+      const sessionExt = sessionBaseMatch && sessionBaseMatch[3] ? sessionBaseMatch[3] : '';
+      
+      // Match if base name and extension are the same
+      return sessionBaseName === baseNameWithoutExt && sessionExt === extension;
+    });
+    
+    // If no matches, return original filename
+    if (matchingSessions.length === 0) {
+      return baseFileName;
+    }
+    
+    // Extract numbers from existing filenames
+    // If a filename has no number suffix, it's the first upload (count as 1)
+    const existingNumbers = matchingSessions
+      .map(session => {
+        const match = session.fileName.match(/\((\d+)\)/);
+        return match ? parseInt(match[1], 10) : 1; // If no number, treat as (1)
+      })
+      .sort((a, b) => b - a); // Sort descending
+    
+    // Find the next available number
+    // If we have matching sessions, the next number is max + 1
+    // If max is 1 and we have 1 session, next is 2
+    // If max is 2 and we have 2 sessions, next is 3, etc.
+    const maxNumber = existingNumbers.length > 0 ? existingNumbers[0] : 0;
+    const nextNumber = maxNumber + 1;
+    
+    // Return filename with number suffix
+    return `${baseNameWithoutExt} (${nextNumber})${extension}`;
+  } catch (error) {
+    console.error('Error generating unique filename, using original:', error);
+    return baseFileName; // Fallback to original filename on error
+  }
+};
+
 // Create a new chat document
 export const createChatDocument = async (
   username: string,
@@ -118,13 +168,18 @@ export const createChatDocument = async (
   insights: Insight[] = []
 ): Promise<ChatDocument> => {
   const timestamp = Date.now();
-  const chatId = `${fileName.replace(/[^a-zA-Z0-9]/g, '_')}_${timestamp}`;
+  
+  // Generate unique filename with number suffix if needed
+  const uniqueFileName = await generateUniqueFileName(fileName, username);
+  console.log(`📝 Generated unique filename: "${fileName}" -> "${uniqueFileName}"`);
+  
+  const chatId = `${uniqueFileName.replace(/[^a-zA-Z0-9]/g, '_')}_${timestamp}`;
   
   const chatDocument: ChatDocument & { fsmrora?: string } = {
     id: chatId,
     username,
     fsmrora: username, // Add partition key field to match partition key path /fsmrora
-    fileName,
+    fileName: uniqueFileName,
     uploadedAt: timestamp,
     createdAt: timestamp,
     lastUpdatedAt: timestamp,
@@ -881,7 +936,7 @@ export const updateChartInsightOrRecommendation = async (
   username: string,
   chartIndex: number,
   sheetId: string | undefined,
-  updates: { keyInsight?: string; recommendation?: string }
+  updates: { keyInsight?: string }
 ): Promise<Dashboard> => {
   const dashboard = await getDashboardById(id, username);
   if (!dashboard) throw new Error("Dashboard not found");
@@ -910,14 +965,10 @@ export const updateChartInsightOrRecommendation = async (
 
   const chart = targetSheet.charts[chartIndex];
 
-  // Update the chart's keyInsight or recommendation
+  // Update the chart's keyInsight
   if (updates.keyInsight !== undefined) {
     // If empty string, set to undefined to remove it
     chart.keyInsight = updates.keyInsight === '' ? undefined : updates.keyInsight;
-  }
-  if (updates.recommendation !== undefined) {
-    // If empty string, set to undefined to remove it
-    chart.recommendation = updates.recommendation === '' ? undefined : updates.recommendation;
   }
 
   // Also update in the legacy charts array for backward compatibility
@@ -929,10 +980,6 @@ export const updateChartInsightOrRecommendation = async (
     if (updates.keyInsight !== undefined) {
       // If empty string, set to undefined to remove it
       dashboard.charts[mainChartIndex].keyInsight = updates.keyInsight === '' ? undefined : updates.keyInsight;
-    }
-    if (updates.recommendation !== undefined) {
-      // If empty string, set to undefined to remove it
-      dashboard.charts[mainChartIndex].recommendation = updates.recommendation === '' ? undefined : updates.recommendation;
     }
   }
 

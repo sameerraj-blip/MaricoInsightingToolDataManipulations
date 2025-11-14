@@ -1,6 +1,7 @@
 import { openai, MODEL } from './openai.js';
 import { ParsedQuery, TimeFilter, ValueFilter, ExclusionFilter, AggregationRequest, SortRequest, TopBottomRequest } from '../../shared/queryTypes.js';
 import { DataSummary, Message } from '../../shared/schema.js';
+import { detectPeriodFromQuery, DatePeriod, extractDatesFromQuery, ExtractedDate } from './dateUtils.js';
 
 interface QueryParserResult extends ParsedQuery {
   confidence: number;
@@ -140,7 +141,7 @@ function sanitiseTopBottom(request?: Nullable<TopBottomRequest>): TopBottomReque
   };
 }
 
-function sanitiseParsedQuery(raw: Nullable<QueryParserResult>): QueryParserResult {
+function sanitiseParsedQuery(raw: Nullable<QueryParserResult>, summary?: DataSummary): QueryParserResult {
   const parsed: QueryParserResult = {
     rawQuestion: raw?.rawQuestion || '',
     confidence: raw?.confidence ?? 0,
@@ -149,6 +150,49 @@ function sanitiseParsedQuery(raw: Nullable<QueryParserResult>): QueryParserResul
   if (raw?.variables) parsed.variables = raw.variables.filter(Boolean) as string[];
   if (raw?.secondaryVariables) parsed.secondaryVariables = raw.secondaryVariables.filter(Boolean) as string[];
   if (raw?.groupBy) parsed.groupBy = raw.groupBy.filter(Boolean) as string[];
+  
+  // Sanitize dateAggregationPeriod
+  const validPeriods: DatePeriod[] = ['day', 'month', 'monthOnly', 'quarter', 'year'];
+  if (raw?.dateAggregationPeriod && validPeriods.includes(raw.dateAggregationPeriod as DatePeriod)) {
+    parsed.dateAggregationPeriod = raw.dateAggregationPeriod as DatePeriod;
+  } else if (raw?.rawQuestion) {
+    // Fallback: try to detect from the query if AI didn't detect it
+    const detected = detectPeriodFromQuery(raw.rawQuestion);
+    if (detected) {
+      parsed.dateAggregationPeriod = detected;
+    }
+  }
+  
+  // Fix groupBy: if dateAggregationPeriod is set, ensure groupBy uses actual date column
+  if (parsed.dateAggregationPeriod && summary && summary.dateColumns.length > 0) {
+    const dateColumn = summary.dateColumns[0]; // Use first date column
+    const periodNames = ['year', 'month', 'quarter', 'day', 'years', 'months', 'quarters', 'days'];
+    
+    if (!parsed.groupBy || parsed.groupBy.length === 0) {
+      // If groupBy is not set but dateAggregationPeriod is, automatically add date column
+      console.log(`🔧 Auto-adding date column "${dateColumn}" to groupBy for period "${parsed.dateAggregationPeriod}"`);
+      parsed.groupBy = [dateColumn];
+    } else {
+      // Check if groupBy contains period names instead of actual date columns
+      const hasPeriodNameInGroupBy = parsed.groupBy.some(col => periodNames.includes(col.toLowerCase()));
+      const hasDateColumn = parsed.groupBy.some(col => summary.dateColumns.includes(col));
+      
+      if (hasPeriodNameInGroupBy && !hasDateColumn) {
+        // Replace period names with actual date column
+        console.log(`🔧 Fixing groupBy: replacing period names with actual date column "${dateColumn}"`);
+        parsed.groupBy = parsed.groupBy.map(col => 
+          periodNames.includes(col.toLowerCase()) ? dateColumn : col
+        );
+        // Remove duplicates
+        parsed.groupBy = Array.from(new Set(parsed.groupBy));
+      } else if (!hasDateColumn) {
+        // If no date column in groupBy but dateAggregationPeriod is set, add it
+        console.log(`🔧 Adding date column "${dateColumn}" to groupBy for period aggregation`);
+        parsed.groupBy = [dateColumn, ...parsed.groupBy];
+      }
+    }
+  }
+  
   parsed.timeFilters = sanitiseTimeFilters(raw?.timeFilters as Nullable<TimeFilter>[]);
   parsed.valueFilters = sanitiseValueFilters(raw?.valueFilters as Nullable<ValueFilter>[]);
   parsed.exclusionFilters = sanitiseExclusionFilters(raw?.exclusionFilters as Nullable<ExclusionFilter>[]);
@@ -158,6 +202,126 @@ function sanitiseParsedQuery(raw: Nullable<QueryParserResult>): QueryParserResul
   parsed.topBottom = sanitiseTopBottom(raw?.topBottom as Nullable<TopBottomRequest>);
   if (typeof raw?.limit === 'number') parsed.limit = Math.max(1, Math.round(raw.limit));
   if (raw?.notes) parsed.notes = raw.notes.filter(Boolean) as string[];
+  return parsed;
+}
+
+/**
+ * Enhance parsed query with extracted dates from the query string
+ * This adds time filters for specific dates mentioned in the query
+ */
+function enhanceTimeFiltersWithExtractedDates(
+  parsed: QueryParserResult,
+  query: string,
+  summary: DataSummary
+): QueryParserResult {
+  const extractedDates = extractDatesFromQuery(query);
+  
+  if (extractedDates.length === 0) return parsed;
+  
+  // If dateAggregationPeriod is 'monthOnly', don't add time filters for specific dates
+  // because the user wants month-only aggregation (combining all years)
+  if (parsed.dateAggregationPeriod === 'monthOnly') {
+    console.log('📅 Month-only aggregation detected, skipping specific date filters');
+    return parsed;
+  }
+  
+  console.log(`📅 Extracted ${extractedDates.length} date(s) from query:`, extractedDates.map(d => d.originalText));
+  
+  // If no time filters exist, create them
+  if (!parsed.timeFilters) {
+    parsed.timeFilters = [];
+  }
+  
+  const dateColumn = summary.dateColumns[0];
+  if (!dateColumn) {
+    console.log('⚠️ No date columns available, skipping date extraction');
+    return parsed;
+  }
+  
+  for (const extracted of extractedDates) {
+    // Check if we already have a filter for this
+    const existingFilter = parsed.timeFilters.find(f => {
+      if (extracted.type === 'year' && f.type === 'year') {
+        return f.years?.includes(extracted.year!);
+      }
+      if (extracted.type === 'month' && f.type === 'month') {
+        const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+                           'July', 'August', 'September', 'October', 'November', 'December'];
+        const extractedMonthName = monthNames[extracted.month!];
+        return f.months?.some(m => m.toLowerCase() === extractedMonthName.toLowerCase());
+      }
+      if (extracted.type === 'dateRange' && f.type === 'dateRange') {
+        return f.startDate === extracted.startDate!.toISOString().split('T')[0] &&
+               f.endDate === extracted.endDate!.toISOString().split('T')[0];
+      }
+      return false;
+    });
+    
+    if (existingFilter) {
+      console.log(`⏭️ Skipping duplicate date filter for: ${extracted.originalText}`);
+      continue; // Skip if already exists
+    }
+    
+    switch (extracted.type) {
+      case 'year':
+        parsed.timeFilters.push({
+          type: 'year',
+          column: dateColumn,
+          years: [extracted.year!],
+        });
+        console.log(`✅ Added year filter: ${extracted.year}`);
+        break;
+      case 'month':
+        // If we have both month and year, use dateRange for precise filtering
+        // Otherwise, use month filter for month-only matching
+        if (extracted.year !== undefined) {
+          // Use dateRange to match specific month-year (e.g., "Apr-24" = April 2024)
+          const startDate = new Date(extracted.year!, extracted.month!, 1);
+          const endDate = new Date(extracted.year!, extracted.month! + 1, 0); // Last day of the month
+          parsed.timeFilters.push({
+            type: 'dateRange',
+            column: dateColumn,
+            startDate: startDate.toISOString().split('T')[0],
+            endDate: endDate.toISOString().split('T')[0],
+          });
+          const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+                             'July', 'August', 'September', 'October', 'November', 'December'];
+          console.log(`✅ Added month-year filter (dateRange): ${monthNames[extracted.month!]} ${extracted.year}`);
+        } else {
+          // Month only, no year specified
+          const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+                             'July', 'August', 'September', 'October', 'November', 'December'];
+          parsed.timeFilters.push({
+            type: 'month',
+            column: dateColumn,
+            months: [monthNames[extracted.month!]],
+          });
+          console.log(`✅ Added month filter: ${monthNames[extracted.month!]}`);
+        }
+        break;
+      case 'date':
+        // Use dateRange with same start and end for exact date match
+        const dateStr = extracted.date!.toISOString().split('T')[0];
+        parsed.timeFilters.push({
+          type: 'dateRange',
+          column: dateColumn,
+          startDate: dateStr,
+          endDate: dateStr,
+        });
+        console.log(`✅ Added date filter: ${dateStr}`);
+        break;
+      case 'dateRange':
+        parsed.timeFilters.push({
+          type: 'dateRange',
+          column: dateColumn,
+          startDate: extracted.startDate!.toISOString().split('T')[0],
+          endDate: extracted.endDate!.toISOString().split('T')[0],
+        });
+        console.log(`✅ Added date range filter: ${extracted.startDate!.toISOString().split('T')[0]} to ${extracted.endDate!.toISOString().split('T')[0]}`);
+        break;
+    }
+  }
+  
   return parsed;
 }
 
@@ -191,6 +355,22 @@ YOUR TASK:
 - Extract the user's intent into structured filters.
 - Use ONLY the columns provided.
 - If the user references time (years, months, quarters, ranges), capture it in timeFilters.
+- If the user mentions specific dates like "Apr-24", "March 2022", "2024", "15/01/2024", extract them and create timeFilters.
+  * For month-year formats (e.g., "Apr-24", "March 2022"), create a timeFilter with type "month" and include the full month name (e.g., "April", "March").
+  * For year-only mentions (e.g., "2024"), create a timeFilter with type "year" and include the year number.
+  * For specific dates (e.g., "2024-01-15", "15/01/2024"), create a timeFilter with type "dateRange" using that date as both startDate and endDate.
+  * For date ranges (e.g., "from Apr-24 to Jun-24"), create a timeFilter with type "dateRange" with startDate and endDate.
+- If the user asks for "monthly revenue", "yearly sales", "by month", "by year", "aggregate by month", "aggregated over year", etc., 
+  set "dateAggregationPeriod" to "month", "monthOnly", "year", "quarter", or "day" accordingly. This indicates that 
+  date columns should be normalized to this period before grouping/aggregation.
+- IMPORTANT: Distinguish between:
+  * "month" - groups by month-year (e.g., "Jan 2024", "Jan 2022" are separate)
+  * "monthOnly" - groups by month name only, combining all years (e.g., all "Jan" values combined regardless of year)
+  Use "monthOnly" when user says "aggregated months", "across months", "by month name" without mentioning specific dates.
+  Use "month" when user mentions specific month-year combinations or wants to see trends over time.
+- IMPORTANT: When "dateAggregationPeriod" is set, the "groupBy" should use the ACTUAL DATE COLUMN NAME from the available columns 
+  (e.g., "Month", "Date", "Year" - whatever date column exists), NOT the period name like "year" or "month". 
+  For example, if dateAggregationPeriod is "year" and the date column is "Month", set groupBy to ["Month"], not ["year"].
 - If the user specifies numeric conditions (>, <, between, etc.), capture in valueFilters.
 - If the user wants to exclude categories, use exclusionFilters.
 - If the user asks for top/bottom N, populate topBottom.
@@ -207,6 +387,7 @@ Output valid JSON with the following structure:
   "variables": string[] | null,
   "secondaryVariables": string[] | null,
   "groupBy": string[] | null,
+  "dateAggregationPeriod": "day" | "month" | "monthOnly" | "quarter" | "year" | null,
   "timeFilters": [
     {
       "type": "year" | "month" | "quarter" | "dateRange" | "relative",
@@ -253,7 +434,10 @@ Ensure the JSON is strict and contains no comments.`;
 
   try {
     const parsed = JSON.parse(content) as Nullable<QueryParserResult>;
-    return sanitiseParsedQuery(parsed);
+    const sanitized = sanitiseParsedQuery(parsed, summary);
+    
+    // Enhance with extracted dates from the query
+    return enhanceTimeFiltersWithExtractedDates(sanitized, question, summary);
   } catch (error) {
     console.error('❌ Failed to parse query parser response:', error, content);
     return {

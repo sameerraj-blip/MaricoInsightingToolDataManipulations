@@ -19,7 +19,6 @@ export const chartSpecSchema = z.object({
   yDomain: z.tuple([z.number(), z.number()]).optional(), // [min, max] for Y-axis
   trendLine: z.array(z.record(z.union([z.string(), z.number()]))).optional(), // Two points defining the trend line: [{ [x]: min, [y]: y1 }, { [x]: max, [y]: y2 }]
   keyInsight: z.string().optional(), // Key insight about the chart
-  recommendation: z.string().optional(), // Actionable recommendation based on the chart
 });
 
 export type ChartSpec = z.infer<typeof chartSpecSchema>;

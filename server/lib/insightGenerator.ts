@@ -6,11 +6,10 @@ export async function generateChartInsights(
   chartData: Record<string, any>[],
   summary: DataSummary,
   chatInsights?: Insight[]
-): Promise<{ keyInsight: string; recommendation: string }> {
+): Promise<{ keyInsight: string }> {
   if (!chartData || chartData.length === 0) {
     return {
-      keyInsight: "No data available for analysis",
-      recommendation: "Please check your data source and try again"
+      keyInsight: "No data available for analysis"
     };
   }
 
@@ -31,7 +30,7 @@ export async function generateChartInsights(
   const minY = numericY.length > 0 ? Math.min(...numericY) : 0;
   const avgY = numericY.length > 0 ? numericY.reduce((a, b) => a + b, 0) / numericY.length : 0;
 
-  // Helper functions for deterministic, numeric recommendations
+  // Helper functions for deterministic, numeric insights
   const percentile = (arr: number[], p: number): number => {
     if (arr.length === 0) return NaN;
     const sorted = [...arr].sort((a, b) => a - b);
@@ -165,19 +164,7 @@ export async function generateChartInsights(
       ? `${chartSpec.y} spans ${formatY(minY)}–${formatY(maxY)} (avg ${formatY(avgY)}). Top 20% outcomes are ≥${formatY(yP80)}.`
       : `${strength} ${trend} correlation (r=${roundSmart(r)}) between ${chartSpec.x} and ${chartSpec.y}. ${chartSpec.y} ranges ${formatY(minY)}–${formatY(maxY)} (avg ${formatY(avgY)}).`;
 
-    // Concise recommendation with clear numeric target/range on X
-    let recommendation = '';
-    if (xInTop20.length > 0) {
-      const xLow = isNaN(xLow20) ? roundSmart(percentile(numericX, 0.25)) : roundSmart(xLow20);
-      const xHigh = isNaN(xHigh20) ? roundSmart(percentile(numericX, 0.75)) : roundSmart(xHigh20);
-      recommendation = `To reach ${chartSpec.y} ≥${formatY(yP80)}, keep ${chartSpec.x} in ${xLow}–${xHigh}; current avg ≈${roundSmart(avgXTop20)}.`;
-    } else {
-      const xP25Str = roundSmart(percentile(numericX, 0.25));
-      const xP75Str = roundSmart(percentile(numericX, 0.75));
-      recommendation = `Aim for ${chartSpec.y} ≥${formatY(yP75)}; adjust ${chartSpec.x} toward ${xP25Str}–${xP75Str}.`;
-    }
-
-    return { keyInsight, recommendation };
+    return { keyInsight };
   }
 
   // Enhanced statistics for all chart types
@@ -216,7 +203,7 @@ export async function generateChartInsights(
     topCategories = categoryStats.map(c => `${c.x} (${formatY(c.y)})`).join(', ');
   }
 
-  // For correlation charts, calculate X-axis statistics for recommendations
+  // For correlation charts, calculate X-axis statistics for insights
   const numericXValues = chartData.map(row => Number(String(row[chartSpec.x]).replace(/[%,,]/g, ''))).filter(v => !isNaN(v));
   const xP25 = numericXValues.length > 0 ? percentile(numericXValues, 0.25) : NaN;
   const xP50 = numericXValues.length > 0 ? percentile(numericXValues, 0.5) : NaN;
@@ -253,7 +240,7 @@ export async function generateChartInsights(
     return roundSmart(val);
   };
 
-  // Fallback to model for non-numeric cases; request quantified recommendations explicitly
+  // Fallback to model for non-numeric cases; request quantified insights explicitly
   const correlationContext = isCorrelationChart ? `
 CRITICAL: This is a CORRELATION/IMPACT ANALYSIS chart.
 - Y-axis (${chartSpec.y}) = TARGET VARIABLE we want to IMPROVE (${targetVariable})
@@ -284,7 +271,7 @@ ${chatInsights.map((insight, idx) => `${idx + 1}. ${insight.text}`).join('\n')}
 IMPORTANT: The keyInsight should be a concise summary (1-2 sentences, ≤220 chars) that relates this specific chart to the relevant chat-level insights above. Focus on insights that mention variables in this chart (${chartSpec.x}, ${chartSpec.y}${isDualAxis ? `, ${y2Label}` : ''}).`
     : '';
 
-  const prompt = `Return JSON with exactly two short fields for this chart: keyInsight and recommendation. Each must be 1–2 sentences (≤220 chars), chart-specific, and include concrete numbers. No bullets.
+  const prompt = `Return JSON with exactly one short field for this chart: keyInsight. It must be 1–2 sentences (≤220 chars), chart-specific, and include concrete numbers. No bullets.
 
 CHART CONTEXT
 - Type: ${chartSpec.type}
@@ -298,8 +285,7 @@ ${correlationContext}${chatInsightsContext}
 
 OUTPUT JSON (exact keys only):
 {
-  "keyInsight": "1–2 sentences, chart-specific with numbers${chatInsights && chatInsights.length > 0 ? ' that summarizes relevant chat insights' : ''}. NEVER use percentile labels like P75, P90, P25 - only use numeric values.",
-  "recommendation": "1–2 sentences with a numeric target/range on ${chartSpec.x} or ${chartSpec.y}. NEVER use percentile labels like P75, P90, P25, P75 level, P90 level - only use the numeric values themselves."
+  "keyInsight": "1–2 sentences, chart-specific with numbers${chatInsights && chatInsights.length > 0 ? ' that summarizes relevant chat insights' : ''}. NEVER use percentile labels like P75, P90, P25 - only use numeric values."
 }`;
 
   try {
@@ -308,7 +294,7 @@ OUTPUT JSON (exact keys only):
       messages: [
         {
           role: 'system',
-          content: 'You are a precise data analyst. Output JSON with exactly two short fields: keyInsight and recommendation. Each must be 1–2 sentences (≤220 chars), chart-specific, include numbers, and be actionable. NEVER use percentile labels like P75, P90, P25, P75 level, P90 level - only use numeric values. No bullets.'
+          content: 'You are a precise data analyst. Output JSON with exactly one short field: keyInsight. It must be 1–2 sentences (≤220 chars), chart-specific, include numbers, and be actionable. NEVER use percentile labels like P75, P90, P25, P75 level, P90 level - only use numeric values. No bullets.'
         },
         { role: 'user', content: prompt },
       ],
@@ -367,27 +353,10 @@ OUTPUT JSON (exact keys only):
           
           const fallbackObservation = observationParts.join('. ') + '.';
           
-          // Build comprehensive recommendation
-          let recommendationParts: string[] = [];
-          if (!isNaN(y2P75)) {
-            recommendationParts.push(`Target ${y2Label} above ${formatY2(y2P75)} to align with top-performing periods`);
-          }
-          if (topPerformersY2.length > 0) {
-            const topPeriods = topPerformersY2.slice(0, 2).map(p => `${p.x} (${formatY2(p.y)})`).join(' and ');
-            recommendationParts.push(`Focus on replicating strategies from top-performing periods like ${topPeriods}`);
-          }
-          if (y2BottomPerformer && !isNaN(y2P75)) {
-            const improvement = ((y2P75 - y2BottomPerformer.y) / y2BottomPerformer.y * 100).toFixed(0);
-            recommendationParts.push(`Increase values in underperforming periods such as ${y2BottomPerformer.x} (${formatY2(y2BottomPerformer.y)}) by at least ${improvement}% to reach the median of ${formatY2(y2Median)}`);
-          }
-          
-          const fallbackRecommendation = recommendationParts.join('. ') + '.';
-          
           result.insights.push({
             title: `**${y2Label} Performance Analysis**`,
             observation: fallbackObservation,
-            whyItMatters: `Monitoring ${y2Label} performance is critical for understanding overall business trends and identifying optimization opportunities. Consistent performance above benchmark levels indicates strong operational efficiency.`,
-            recommendation: fallbackRecommendation
+            whyItMatters: `Monitoring ${y2Label} performance is critical for understanding overall business trends and identifying optimization opportunities. Consistent performance above benchmark levels indicates strong operational efficiency.`
           });
         } else if (!mentionsY && mentionsY2) {
           console.warn(`⚠️ Dual-axis chart insights only mention ${y2Label}, missing ${chartSpec.y}. Adding fallback insight.`);
@@ -424,45 +393,25 @@ OUTPUT JSON (exact keys only):
           
           const fallbackObservation = observationParts.join('. ') + '.';
           
-          // Build comprehensive recommendation
-          let recommendationParts: string[] = [];
-          if (!isNaN(yP75)) {
-            recommendationParts.push(`Target ${chartSpec.y} above ${formatY(yP75)} to align with top-performing periods`);
-          }
-          if (topPerformers.length > 0) {
-            const topPeriods = topPerformers.slice(0, 2).map(p => `${p.x} (${formatY(p.y)})`).join(' and ');
-            recommendationParts.push(`Focus on replicating strategies from top-performing periods like ${topPeriods}`);
-          }
-          if (yBottomPerformer && !isNaN(yP75)) {
-            const improvement = ((yP75 - yBottomPerformer.y) / yBottomPerformer.y * 100).toFixed(0);
-            recommendationParts.push(`Increase values in underperforming periods such as ${yBottomPerformer.x} (${formatY(yBottomPerformer.y)}) by at least ${improvement}% to reach the median of ${formatY(yMedian)}`);
-          }
-          
-          const fallbackRecommendation = recommendationParts.join('. ') + '.';
-          
           result.insights.unshift({
             title: `**${chartSpec.y} Performance Analysis**`,
             observation: fallbackObservation,
-            whyItMatters: `Monitoring ${chartSpec.y} performance is critical for understanding overall business trends and identifying optimization opportunities. Consistent performance above benchmark levels indicates strong operational efficiency.`,
-            recommendation: fallbackRecommendation
+            whyItMatters: `Monitoring ${chartSpec.y} performance is critical for understanding overall business trends and identifying optimization opportunities. Consistent performance above benchmark levels indicates strong operational efficiency.`
           });
         }
       }
       
-      // Build ultra-concise per-chart keyInsight and recommendation (1-2 sentences each)
+      // Build ultra-concise per-chart keyInsight (1-2 sentences)
       const take = (s: string) => (s || '').replace(/\s+/g, ' ').trim();
       const cap = (s: string, n = 220) => s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s;
       const first = result.insights[0] || {};
       const title = take(first.title || 'Insight');
       const observation = take(first.observation || first.text || '');
-      const recText = take(first.recommendation || '');
 
       const conciseInsight = cap([title, observation].filter(Boolean).join(': '));
-      const conciseRecommendation = cap(recText.length ? recText : 'Consider an actionable adjustment based on the observed pattern.');
 
       return {
         keyInsight: conciseInsight,
-        recommendation: conciseRecommendation,
       };
     }
 
@@ -471,13 +420,11 @@ OUTPUT JSON (exact keys only):
     const cap = (s: string, n = 220) => s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s;
     return {
       keyInsight: cap(take(result.keyInsight || "Data shows interesting patterns worth investigating")),
-      recommendation: cap(take(result.recommendation || "Consider further analysis to understand the underlying factors")),
     };
   } catch (error) {
     console.error('Error generating chart insights:', error);
     return {
-      keyInsight: `This ${chartSpec.type} chart shows ${chartData.length} data points with values ranging from ${minY.toFixed(2)} to ${maxY.toFixed(2)}`,
-      recommendation: "Review the data patterns and consider how they align with your business objectives"
+      keyInsight: `This ${chartSpec.type} chart shows ${chartData.length} data points with values ranging from ${minY.toFixed(2)} to ${maxY.toFixed(2)}`
     };
   }
 }

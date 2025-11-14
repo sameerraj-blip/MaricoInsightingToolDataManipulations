@@ -23,7 +23,7 @@ export async function analyzeUpload(
   const charts = await Promise.all(chartSpecs.map(async (spec) => {
     const processedData = processChartData(data, spec);
     
-    // Generate key insight and recommendation for this specific chart
+    // Generate key insight for this specific chart
     const chartInsights = await generateChartInsights(spec, processedData, summary);
     
     return {
@@ -32,7 +32,6 @@ export async function analyzeUpload(
       yLabel: spec.y,
       data: processedData,
       keyInsight: chartInsights.keyInsight,
-      recommendation: chartInsights.recommendation,
     };
   }));
 
@@ -209,12 +208,8 @@ export async function answerQuestion(
   }
 
   const withNotes = <T extends { answer: string }>(result: T): T => {
-    if (!transformationNotes.length) return result;
-    const uniqueNotes = Array.from(new Set(transformationNotes));
-    return {
-      ...result,
-      answer: `${result.answer}\n\nFilters applied: ${uniqueNotes.join('; ')}`,
-    };
+    // Return result as-is without appending filters applied text
+    return result;
   };
 
   // Legacy implementation (existing code)
@@ -658,7 +653,7 @@ export async function answerQuestion(
     
     return withNotes({ 
       answer: `Created a scatter plot showing the correlation between ${resolvedVar1} and ${resolvedVar2}: X = ${resolvedVar1}, Y = ${resolvedVar2}.`,
-      charts: [{ ...scatterSpec, data: scatterData, keyInsight: scatterInsights.keyInsight, recommendation: scatterInsights.recommendation }]
+      charts: [{ ...scatterSpec, data: scatterData, keyInsight: scatterInsights.keyInsight }]
     });
   }
 
@@ -719,7 +714,7 @@ export async function answerQuestion(
     
     return withNotes({ 
       answer: `Created a scatter plot: X = ${resolvedVar1}, Y = ${resolvedVar2}.`,
-      charts: [{ ...scatterSpec, data: scatterData, keyInsight: scatterInsights.keyInsight, recommendation: scatterInsights.recommendation }]
+      charts: [{ ...scatterSpec, data: scatterData, keyInsight: scatterInsights.keyInsight }]
     });
   }
 
@@ -778,8 +773,7 @@ export async function answerQuestion(
     const chart: ChartSpec = { 
       ...spec, 
       data: processed, 
-      keyInsight: insights.keyInsight, 
-      recommendation: insights.recommendation 
+      keyInsight: insights.keyInsight
     };
     
     const answer = wantsDualAxis 
@@ -824,7 +818,7 @@ export async function answerQuestion(
       const insights = await generateChartInsights(spec, dataProcessed, summary, chatInsights);
       return withNotes({ 
         answer: `Created a dual-axis line chart: X = ${xTime}, left Y = ${against.yVar}, right Y = ${against.xVar}.`,
-        charts: [{ ...spec, data: dataProcessed, keyInsight: insights.keyInsight, recommendation: insights.recommendation }]
+        charts: [{ ...spec, data: dataProcessed, keyInsight: insights.keyInsight }]
       });
     }
 
@@ -845,7 +839,7 @@ export async function answerQuestion(
     const scatterInsights = await generateChartInsights(scatter, scatterData, summary, chatInsights);
     return withNotes({ 
       answer: `Created a scatter plot: X = ${against.xVar}, Y = ${against.yVar}.`,
-      charts: [{ ...scatter, data: scatterData, keyInsight: scatterInsights.keyInsight, recommendation: scatterInsights.recommendation }]
+      charts: [{ ...scatter, data: scatterData, keyInsight: scatterInsights.keyInsight }]
     });
   }
 
@@ -919,7 +913,6 @@ export async function answerQuestion(
         ...dualAxisLineSpec,
         data: dualAxisLineData,
         keyInsight: dualAxisInsights.keyInsight,
-        recommendation: dualAxisInsights.recommendation,
       }];
       
       const answer = `I've created a line chart with ${vsEarly.var1} on the left axis and ${vsEarly.var2} on the right axis, plotted over ${lineChartX}.`;
@@ -989,7 +982,6 @@ export async function answerQuestion(
         ...scatterSpec,
         data: scatterData,
         keyInsight: scatterInsights.keyInsight,
-        recommendation: scatterInsights.recommendation,
       });
     }
     
@@ -998,7 +990,6 @@ export async function answerQuestion(
         ...lineSpec1,
         data: lineData1,
         keyInsight: lineInsights1.keyInsight,
-        recommendation: lineInsights1.recommendation,
       });
     }
     
@@ -1007,7 +998,6 @@ export async function answerQuestion(
         ...lineSpec2,
         data: lineData2,
         keyInsight: lineInsights2.keyInsight,
-        recommendation: lineInsights2.recommendation,
       });
     }
     
@@ -1146,12 +1136,12 @@ export async function answerQuestion(
       
       // Enrich charts with insights if needed
       try {
-        const needsEnrichment = Array.isArray(enrichedCharts) && enrichedCharts.some((c: any) => !('keyInsight' in c) || !('recommendation' in c));
+        const needsEnrichment = Array.isArray(enrichedCharts) && enrichedCharts.some((c: any) => !('keyInsight' in c));
         if (needsEnrichment) {
           enrichedCharts = await Promise.all(
             enrichedCharts.map(async (c: any) => {
               const chartInsights = await generateChartInsights(c, c.data || [], summary, chatInsights);
-              return { ...c, keyInsight: c.keyInsight ?? chartInsights.keyInsight, recommendation: c.recommendation ?? chartInsights.recommendation } as ChartSpec;
+              return { ...c, keyInsight: c.keyInsight ?? chartInsights.keyInsight } as ChartSpec;
             })
           );
         }
@@ -1313,15 +1303,15 @@ export async function answerQuestion(
       );
 
       // Fallback: if for any reason charts came back without per-chart insights,
-      // enrich them here so the UI always gets keyInsight and recommendation.
+      // enrich them here so the UI always gets keyInsight.
       let enrichedCharts = charts;
       try {
-        const needsEnrichment = Array.isArray(charts) && charts.some((c: any) => !('keyInsight' in c) || !('recommendation' in c));
+        const needsEnrichment = Array.isArray(charts) && charts.some((c: any) => !('keyInsight' in c));
         if (needsEnrichment) {
           enrichedCharts = await Promise.all(
             charts.map(async (c: any) => {
               const chartInsights = await generateChartInsights(c, c.data || [], summary, chatInsights);
-              return { ...c, keyInsight: c.keyInsight ?? chartInsights.keyInsight, recommendation: c.recommendation ?? chartInsights.recommendation } as ChartSpec;
+              return { ...c, keyInsight: c.keyInsight ?? chartInsights.keyInsight } as ChartSpec;
             })
           );
         }
@@ -1953,12 +1943,8 @@ export async function generateGeneralAnswer(
   }
   
   const withNotes = <T extends { answer: string }>(result: T): T => {
-    if (!transformationNotes.length) return result;
-    const uniqueNotes = Array.from(new Set(transformationNotes));
-    return {
-      ...result,
-      answer: `${result.answer}\n\nFilters applied: ${uniqueNotes.join('; ')}`,
-    };
+    // Return result as-is without appending filters applied text
+    return result;
   };
   
   // If secondary Y-axis is requested, try to find the previous chart from chat history
@@ -2007,7 +1993,6 @@ export async function generateGeneralAnswer(
           ...updatedChart,
           data: chartData,
           keyInsight: insights.keyInsight,
-          recommendation: insights.recommendation,
         }],
       });
     }
@@ -2046,7 +2031,6 @@ export async function generateGeneralAnswer(
               ...dualAxisSpec,
               data: chartData,
               keyInsight: insights.keyInsight,
-              recommendation: insights.recommendation,
             }],
           });
         }
@@ -2216,7 +2200,6 @@ export async function generateGeneralAnswer(
         ...spec, 
         data: enrichedData, 
         keyInsight: insights.keyInsight, 
-        recommendation: insights.recommendation,
         // Store additional variables in a way the frontend can access
         // We'll use a custom property that won't break the schema
       } as any],
@@ -2391,7 +2374,7 @@ export async function generateGeneralAnswer(
     
     return withNotes({
       answer,
-      charts: [{ ...spec, data: processed, keyInsight: insights.keyInsight, recommendation: insights.recommendation }],
+      charts: [{ ...spec, data: processed, keyInsight: insights.keyInsight }],
       insights: []
     });
   }
@@ -2539,7 +2522,6 @@ export async function generateGeneralAnswer(
       ...lineSpec,
       data: lineData,
       keyInsight: lineInsights.keyInsight,
-      recommendation: lineInsights.recommendation,
     }];
     
     const answer = wantsDualAxis
@@ -2641,13 +2623,11 @@ export async function generateGeneralAnswer(
         ...scatterSpec,
         data: scatterData,
         keyInsight: scatterInsights.keyInsight,
-        recommendation: scatterInsights.recommendation,
       },
       {
         ...lineSpec,
         data: lineData,
         keyInsight: lineInsights.keyInsight,
-        recommendation: lineInsights.recommendation,
       },
     ];
     
@@ -3143,7 +3123,6 @@ TECHNICAL RULES:
           yLabel: spec.y,
           data: processedData,
           keyInsight: chartInsights.keyInsight,
-          recommendation: chartInsights.recommendation,
         };
       }));
       
@@ -3183,7 +3162,6 @@ TECHNICAL RULES:
             aggregate: 'none',
             data: mergedData,
             keyInsight: c1.keyInsight,
-            recommendation: c1.recommendation,
           } as any;
           // Replace charts with single merged one
           processedCharts = [merged];
@@ -3194,14 +3172,11 @@ TECHNICAL RULES:
     // Always provide chat-level insights: prefer model's, else derive from charts
     let overallInsights = Array.isArray(result.insights) ? result.insights : undefined;
     if ((!overallInsights || overallInsights.length === 0) && Array.isArray(processedCharts) && processedCharts.length > 0) {
-      // Generate insights from both keyInsights and recommendations
+      // Generate insights from keyInsights
       overallInsights = [];
       processedCharts.forEach((c, idx) => {
         if (c.keyInsight) {
           overallInsights!.push({ id: overallInsights!.length + 1, text: c.keyInsight });
-        }
-        if (c.recommendation && c.recommendation !== c.keyInsight) {
-          overallInsights!.push({ id: overallInsights!.length + 1, text: `**Suggestion:** ${c.recommendation}` });
         }
       });
       // If still no insights, create at least one fallback

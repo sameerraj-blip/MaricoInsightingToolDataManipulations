@@ -1,5 +1,6 @@
 import { ParsedQuery, TimeFilter, ValueFilter, ExclusionFilter, AggregationRequest, SortRequest, TopBottomRequest, AggregationOperation } from '../../shared/queryTypes.js';
 import { DataSummary } from '../../shared/schema.js';
+import { normalizeDateToPeriod, DatePeriod, parseFlexibleDate } from './dateUtils.js';
 
 interface TransformationResult {
   data: Record<string, any>[];
@@ -40,28 +41,8 @@ function toNumber(value: any): number {
 }
 
 function parseDate(value: any): Date | null {
-  if (value === null || value === undefined) return null;
-  if (value instanceof Date && !isNaN(value.getTime())) return value;
-  const str = String(value).trim();
-  if (!str) return null;
-
-  const mmmYyMatch = str.match(/^([A-Za-z]{3,})[-\s/]?(\d{2,4})$/);
-  if (mmmYyMatch) {
-    const monthName = mmmYyMatch[1].toLowerCase().substring(0, 3);
-    const month = MONTH_MAP[monthName];
-    if (month !== undefined) {
-      let year = parseInt(mmmYyMatch[2], 10);
-      if (year < 100) {
-        year = year <= 30 ? 2000 + year : 1900 + year;
-      }
-      return new Date(year, month, 1);
-    }
-  }
-
-  const date = new Date(str);
-  if (!isNaN(date.getTime())) return date;
-
-  return null;
+  // Use the flexible date parser from dateUtils for consistent parsing
+  return parseFlexibleDate(value);
 }
 
 function resolveDateColumn(summary: DataSummary, column?: string): string | undefined {
@@ -88,14 +69,55 @@ function applyTimeFilter(
       case 'month':
         if (!filter.months || !filter.months.length) return true;
         const monthName = date.toLocaleString('en-US', { month: 'long' });
-        return filter.months.some((m) => monthName.toLowerCase() === m.toLowerCase());
+        // Check full month name match
+        const monthMatch = filter.months.some((m) => {
+          if (monthName.toLowerCase() === m.toLowerCase()) return true;
+          
+          // Also check if the filter month matches when we parse the row's date value
+          // This handles cases where data has "Apr-24" format and filter is "April"
+          const rowDateStr = String(row[column]);
+          const parsedRowDate = parseDate(rowDateStr);
+          if (parsedRowDate) {
+            const rowMonthName = parsedRowDate.toLocaleString('en-US', { month: 'long' });
+            const rowYear = parsedRowDate.getFullYear();
+            // Check if month and year match (for month-year formats like "Apr-24")
+            if (rowMonthName.toLowerCase() === m.toLowerCase() && 
+                rowYear === date.getFullYear()) {
+              return true;
+            }
+          }
+          return false;
+        });
+        return monthMatch;
       case 'quarter':
         if (!filter.quarters || !filter.quarters.length) return true;
         const quarter = Math.floor(date.getMonth() / 3) + 1;
         return filter.quarters.includes(quarter as 1 | 2 | 3 | 4);
       case 'dateRange': {
-        const afterStart = filter.startDate ? date >= new Date(filter.startDate) : true;
-        const beforeEnd = filter.endDate ? date <= new Date(filter.endDate) : true;
+        if (!filter.startDate && !filter.endDate) return true;
+        
+        // Parse filter dates and ensure they're at start/end of day for inclusive comparison
+        let startDate: Date | null = null;
+        let endDate: Date | null = null;
+        
+        if (filter.startDate) {
+          startDate = new Date(filter.startDate);
+          // Set to start of day (00:00:00) to ensure inclusive lower bound
+          startDate.setHours(0, 0, 0, 0);
+        }
+        
+        if (filter.endDate) {
+          endDate = new Date(filter.endDate);
+          // Set to end of day (23:59:59.999) to ensure inclusive upper bound
+          endDate.setHours(23, 59, 59, 999);
+        }
+        
+        // Normalize the row date to start of day for consistent comparison
+        const rowDate = new Date(date);
+        rowDate.setHours(0, 0, 0, 0);
+        
+        const afterStart = startDate ? rowDate >= startDate : true;
+        const beforeEnd = endDate ? rowDate <= endDate : true;
         return afterStart && beforeEnd;
       }
       case 'relative': {
@@ -319,22 +341,57 @@ function applyAggregations(
   data: Record<string, any>[],
   summary: DataSummary,
   groupBy: string[] = [],
-  aggregations: AggregationRequest[] = []
+  aggregations: AggregationRequest[] = [],
+  dateAggregationPeriod?: DatePeriod | null
 ): { data: Record<string, any>[]; description?: string } {
   if (!groupBy.length || !aggregations.length) {
     return { data };
   }
 
-  const groups = new Map<string, Record<string, any>[]>()
+  // Map to track which columns are date columns and need normalization
+  const dateColumnMap = new Map<string, { original: string; period: DatePeriod }>();
+  const normalizedGroupBy: string[] = [];
+  
+  for (const col of groupBy) {
+    const isDateCol = summary.dateColumns.includes(col);
+    if (isDateCol && dateAggregationPeriod) {
+      // Create a normalized column name for grouping
+      const normalizedCol = `${col}_${dateAggregationPeriod}`;
+      normalizedGroupBy.push(normalizedCol);
+      dateColumnMap.set(normalizedCol, { original: col, period: dateAggregationPeriod });
+    } else {
+      normalizedGroupBy.push(col);
+    }
+  }
 
-  const keyForRow = (row: Record<string, any>) => groupBy.map((col) => row[col]).join('||');
+  const groups = new Map<string, { rows: Record<string, any>[]; displayLabels: Map<string, string> }>();
+  
+  // Store display labels for normalized dates
+  const displayLabelMap = new Map<string, string>();
+
+  const keyForRow = (row: Record<string, any>) => {
+    return normalizedGroupBy.map((col) => {
+      if (dateColumnMap.has(col)) {
+        const { original, period } = dateColumnMap.get(col)!;
+        const dateValue = String(row[original]);
+        const normalized = normalizeDateToPeriod(dateValue, period);
+        if (normalized) {
+          // Store display label for this normalized key
+          displayLabelMap.set(normalized.normalizedKey, normalized.displayLabel);
+          return normalized.normalizedKey;
+        }
+        return dateValue;
+      }
+      return String(row[col]);
+    }).join('||');
+  };
 
   for (const row of data) {
     const key = keyForRow(row);
     if (!groups.has(key)) {
-      groups.set(key, []);
+      groups.set(key, { rows: [], displayLabels: new Map() });
     }
-    groups.get(key)!.push(row);
+    groups.get(key)!.rows.push(row);
   }
 
   // For percent_change, we need to calculate across groups, so handle it separately
@@ -345,11 +402,18 @@ function applyAggregations(
   if (hasPercentChange && groupBy.length === 1) {
     // For percent_change, we need to sort by the groupBy column and calculate changes
     // First, create regular aggregated rows
-    for (const [key, rows] of Array.from(groups.entries())) {
+    for (const [key, { rows }] of Array.from(groups.entries())) {
       const base: Record<string, any> = {};
       const keyParts = key.split('||');
-      groupBy.forEach((col, idx) => {
-        base[col] = keyParts[idx];
+      normalizedGroupBy.forEach((col, idx) => {
+        if (dateColumnMap.has(col)) {
+          // Use display label for normalized date columns
+          const originalCol = dateColumnMap.get(col)!.original;
+          const normalizedKey = keyParts[idx];
+          base[originalCol] = displayLabelMap.get(normalizedKey) || normalizedKey;
+        } else {
+          base[col] = keyParts[idx];
+        }
       });
 
       for (const agg of aggregations) {
@@ -397,10 +461,11 @@ function applyAggregations(
     }
     
     // Sort by groupBy column for percent_change calculation
-    const groupByCol = groupBy[0];
+    const groupByCol = normalizedGroupBy[0];
+    const originalGroupByCol = dateColumnMap.has(groupByCol) ? dateColumnMap.get(groupByCol)!.original : groupByCol;
     aggregatedRows.sort((a, b) => {
-      const aVal = a[groupByCol];
-      const bVal = b[groupByCol];
+      const aVal = a[originalGroupByCol];
+      const bVal = b[originalGroupByCol];
       // Try to parse as date if possible
       const aDate = parseDate(aVal);
       const bDate = parseDate(bVal);
@@ -423,9 +488,24 @@ function applyAggregations(
           // Get the current value (might need to aggregate first if not already aggregated)
           let currentValue: number | null = null;
           if (previousRow) {
-            // Get the original value from the current group
-            const currentGroupKey = groupBy.map(col => currentRow[col]).join('||');
-            const currentGroupRows = groups.get(currentGroupKey) || [];
+            // Reconstruct the key to find the group
+            const currentKey = normalizedGroupBy.map((col) => {
+              if (dateColumnMap.has(col)) {
+                const originalCol = dateColumnMap.get(col)!.original;
+                const displayValue = currentRow[originalCol];
+                // Find the normalized key from display label
+                for (const [normKey, displayLabel] of displayLabelMap.entries()) {
+                  if (displayLabel === displayValue) {
+                    return normKey;
+                  }
+                }
+                return displayValue;
+              }
+              return String(currentRow[col]);
+            }).join('||');
+            
+            const currentGroupData = groups.get(currentKey);
+            const currentGroupRows = currentGroupData?.rows || [];
             const currentValues = currentGroupRows.map((r: Record<string, any>) => toNumber(r[agg.column])).filter((v: number) => !isNaN(v));
             if (currentValues.length > 0) {
               // Use mean for the current group
@@ -433,8 +513,23 @@ function applyAggregations(
             }
             
             // Get the previous value
-            const previousGroupKey = groupBy.map(col => previousRow[col]).join('||');
-            const previousGroupRows = groups.get(previousGroupKey) || [];
+            const previousKey = normalizedGroupBy.map((col) => {
+              if (dateColumnMap.has(col)) {
+                const originalCol = dateColumnMap.get(col)!.original;
+                const displayValue = previousRow[originalCol];
+                // Find the normalized key from display label
+                for (const [normKey, displayLabel] of displayLabelMap.entries()) {
+                  if (displayLabel === displayValue) {
+                    return normKey;
+                  }
+                }
+                return displayValue;
+              }
+              return String(previousRow[col]);
+            }).join('||');
+            
+            const previousGroupData = groups.get(previousKey);
+            const previousGroupRows = previousGroupData?.rows || [];
             const previousValues = previousGroupRows.map((r: Record<string, any>) => toNumber(r[agg.column])).filter((v: number) => !isNaN(v));
             if (previousValues.length > 0 && currentValue !== null) {
               const previousValue = previousValues.reduce((sum: number, val: number) => sum + val, 0) / previousValues.length;
@@ -456,11 +551,18 @@ function applyAggregations(
     }
   } else {
     // Regular aggregation (no percent_change or multiple groupBy columns)
-    for (const [key, rows] of Array.from(groups.entries())) {
+    for (const [key, { rows }] of Array.from(groups.entries())) {
       const base: Record<string, any> = {};
       const keyParts = key.split('||');
-      groupBy.forEach((col, idx) => {
-        base[col] = keyParts[idx];
+      normalizedGroupBy.forEach((col, idx) => {
+        if (dateColumnMap.has(col)) {
+          // Use display label for normalized date columns
+          const originalCol = dateColumnMap.get(col)!.original;
+          const normalizedKey = keyParts[idx];
+          base[originalCol] = displayLabelMap.get(normalizedKey) || normalizedKey;
+        } else {
+          base[col] = keyParts[idx];
+        }
       });
 
       for (const agg of aggregations) {
@@ -554,7 +656,7 @@ export function applyQueryTransformations(
     if (workingData.length === 0) {
       console.warn(`⚠️ Cannot aggregate: No data available (filter may have removed all rows)`);
     } else {
-      const { data: aggregated, description } = applyAggregations(workingData, summary, parsed.groupBy, parsed.aggregations);
+      const { data: aggregated, description } = applyAggregations(workingData, summary, parsed.groupBy, parsed.aggregations, parsed.dateAggregationPeriod);
       workingData = aggregated;
       console.log(`   Data after aggregation: ${workingData.length} rows`);
       if (workingData.length > 0) {

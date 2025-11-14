@@ -126,8 +126,8 @@ export function ResizableTile({
       if (thisTileIndex < 0 || thisTileIndex === 0) return; // First tile stays at (0,0)
       
       // Calculate Y position based on previous tiles' heights + gaps
-      // Use default heights: chart=330px, insight=150px, recommendation=150px
-      const defaultHeights = [330, 150, 150]; // Chart, Insight, Recommendation
+      // Use default heights: chart=330px, insight=150px
+      const defaultHeights = [330, 150]; // Chart, Insight
       let calculatedY = 0;
       for (let i = 0; i < thisTileIndex; i++) {
         if (i < allTiles.length) {

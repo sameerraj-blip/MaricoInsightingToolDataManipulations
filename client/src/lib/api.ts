@@ -270,7 +270,7 @@ export const dashboardsApi = {
   updateChartInsightOrRecommendation: (
     dashboardId: string,
     chartIndex: number,
-    updates: { keyInsight?: string; recommendation?: string },
+    updates: { keyInsight?: string },
     sheetId?: string
   ) =>
     api.patch<Dashboard>(`/api/dashboards/${dashboardId}/charts/${chartIndex}`, {

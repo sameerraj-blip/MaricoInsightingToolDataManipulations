@@ -437,16 +437,16 @@ const Analysis: React.FC<AnalysisProps> = ({ onNavigate, onNewChat, onLoadSessio
                         >
                           <Edit2 className="h-4 w-4" />
                         </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={(e) => handleDeleteClick(e, session)}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={(e) => handleDeleteClick(e, session)}
                           disabled={isLoading}
                           className="text-red-600 hover:text-red-700 hover:bg-red-50 disabled:opacity-50"
                           title="Delete analysis"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
                       </div>
                     </div>
                   </div>

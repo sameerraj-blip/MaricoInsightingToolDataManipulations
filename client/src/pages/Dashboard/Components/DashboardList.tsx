@@ -89,7 +89,7 @@ export function DashboardList({
                   </CardTitle>
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Calendar className="h-4 w-4" />
-                    <span>Created {dashboard.createdAt.toLocaleDateString()}</span>
+                    <span>Updated {dashboard.updatedAt.toLocaleDateString()}</span>
                   </div>
                 </div>
                 <Badge variant="secondary" className="ml-2">

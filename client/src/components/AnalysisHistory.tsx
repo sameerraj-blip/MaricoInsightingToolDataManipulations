@@ -428,12 +428,6 @@ export function AnalysisHistory({ onLoadAnalysis }: AnalysisHistoryProps) {
                             <div className="text-muted-foreground">{chart.keyInsight}</div>
                           </div>
                         )}
-                        {chart.recommendation && (
-                          <div className="text-sm mt-2">
-                            <div className="font-medium">Suggestion:</div>
-                            <div className="text-muted-foreground">{chart.recommendation}</div>
-                          </div>
-                        )}
                       </div>
                     ))}
                   </div>

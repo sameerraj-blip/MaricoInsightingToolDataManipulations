@@ -148,7 +148,6 @@ export class GeneralHandler extends BaseHandler {
           ...updatedChart,
           data: chartData,
           keyInsight: insights.keyInsight,
-          recommendation: insights.recommendation,
         }],
       };
     }
@@ -190,7 +189,6 @@ export class GeneralHandler extends BaseHandler {
             ...dualAxisSpec,
             data: chartData,
             keyInsight: insights.keyInsight,
-            recommendation: insights.recommendation,
           }],
         };
       }

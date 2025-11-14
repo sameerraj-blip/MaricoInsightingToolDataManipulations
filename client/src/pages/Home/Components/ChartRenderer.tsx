@@ -130,9 +130,36 @@ export function ChartRenderer({
     if (!enableFilters) return [];
     const forceCategoricalKeys: string[] = [];
     const forceNumericKeys: string[] = [];
+    const forceDateKeys: string[] = [];
 
+    // Check if X-axis is a date column (for time-based charts)
     if (typeof x === 'string') {
-      forceCategoricalKeys.push(x);
+      // Check if column name suggests it's a date column
+      const xLower = x.toLowerCase();
+      const nameSuggestsDate = /\b(date|month|week|year|time|period)\b/i.test(xLower);
+      
+      // Check if sample values look like dates
+      if (originalData.length > 0) {
+        const sampleValues = originalData.slice(0, Math.min(5, originalData.length))
+          .map(row => String(row[x] || ''));
+        const allLookLikeDates = sampleValues.length > 0 && 
+          sampleValues.every(v => {
+            if (!v || v.length < 4) return false;
+            // Check for month-year format like "Apr-22", "May-22"
+            if (/^[A-Za-z]{3}[-/]?\d{2,4}$/i.test(v.trim())) return true;
+            // Check for standard date formats
+            const parsed = new Date(v);
+            return !isNaN(parsed.getTime());
+          });
+        
+        if (nameSuggestsDate || allLookLikeDates) {
+          forceDateKeys.push(x);
+        } else {
+          forceCategoricalKeys.push(x);
+        }
+      } else {
+        forceCategoricalKeys.push(x);
+      }
     }
     if (typeof y === 'string') {
       forceNumericKeys.push(y);
@@ -141,6 +168,7 @@ export function ChartRenderer({
     return deriveChartFilterDefinitions(originalData, {
       forceCategoricalKeys,
       forceNumericKeys,
+      forceDateKeys,
     });
   }, [enableFilters, originalData, x, y]);
 

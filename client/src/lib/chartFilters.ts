@@ -85,6 +85,21 @@ const toLabel = (key: string) => {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 };
 
+const MONTH_NAMES: { [key: string]: number } = {
+  'jan': 0, 'january': 0,
+  'feb': 1, 'february': 1,
+  'mar': 2, 'march': 2,
+  'apr': 3, 'april': 3,
+  'may': 4,
+  'jun': 5, 'june': 5,
+  'jul': 6, 'july': 6,
+  'aug': 7, 'august': 7,
+  'sep': 8, 'september': 8, 'sept': 8,
+  'oct': 9, 'october': 9,
+  'nov': 10, 'november': 10,
+  'dec': 11, 'december': 11
+};
+
 const normalizeYear = (date: Date) => {
   const year = date.getFullYear();
   if (year < MIN_YEAR || year > MAX_YEAR) {
@@ -93,13 +108,45 @@ const normalizeYear = (date: Date) => {
   return date;
 };
 
+const parseFlexibleDate = (dateStr: string): Date | null => {
+  if (!dateStr) return null;
+  
+  const str = String(dateStr).trim();
+  if (!str) return null;
+  
+  // Try month-year formats: "Jan-24", "January 2024", "Jan/24", "Jan 2024", "Jan24", "Apr-22"
+  const monthYearMatch = str.match(/^([A-Za-z]{3,})[-\s/]?(\d{2,4})$/i);
+  if (monthYearMatch) {
+    const monthName = monthYearMatch[1].toLowerCase();
+    const month = MONTH_NAMES[monthName];
+    if (month !== undefined) {
+      let year = parseInt(monthYearMatch[2], 10);
+      if (year < 100) {
+        // Common convention: 00-30 = 2000-2030, 31-99 = 1931-1999
+        year = year <= 30 ? 2000 + year : 1900 + year;
+      }
+      if (year >= 1900 && year <= 2100) {
+        return new Date(year, month, 1);
+      }
+    }
+  }
+  
+  // Try standard date formats
+  const parsed = new Date(str);
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed;
+  }
+  
+  return null;
+};
+
 const isValidDateString = (value: string) => {
   if (!value || typeof value !== "string") return false;
   const trimmed = value.trim();
   if (trimmed.length < 4) return false;
-  const parsed = Date.parse(trimmed);
-  if (Number.isNaN(parsed)) return false;
-  const year = new Date(parsed).getFullYear();
+  const parsed = parseFlexibleDate(trimmed);
+  if (!parsed) return false;
+  const year = parsed.getFullYear();
   return year >= MIN_YEAR && year <= MAX_YEAR;
 };
 
@@ -130,8 +177,8 @@ const normalizeDateValue = (value: unknown) => {
   if (typeof value === "string") {
     const trimmed = value.trim();
     if (trimmed.length < 4) return undefined;
-    const parsed = new Date(trimmed);
-    if (Number.isNaN(parsed.getTime())) return undefined;
+    const parsed = parseFlexibleDate(trimmed);
+    if (!parsed) return undefined;
     return normalizeYear(parsed);
   }
 
@@ -251,77 +298,40 @@ export const deriveChartFilterDefinitions = (
     if (acc.total === 0) return;
 
     const dateRatio = acc.dateCandidateCount / acc.total;
-    const { trimmedMin, trimmedMax } = (() => {
-      const entries = Array.from(acc.dateCounts.entries()).sort((a, b) => a[0] - b[0]);
-      if (entries.length === 0) {
-        return { trimmedMin: undefined, trimmedMax: undefined };
+    
+    // Get actual min/max dates from the dataset (not trimmed)
+    const dateTimestamps = Array.from(acc.dateCounts.keys());
+    const actualMinTimestamp = dateTimestamps.length > 0 ? Math.min(...dateTimestamps) : undefined;
+    const actualMaxTimestamp = dateTimestamps.length > 0 ? Math.max(...dateTimestamps) : undefined;
+
+    // If this is a forced date key, always create a date filter if we have valid dates
+    if (forceDate.has(key)) {
+      if (actualMinTimestamp !== undefined && actualMaxTimestamp !== undefined) {
+        definitions.push({
+          key,
+          label: toLabel(key),
+          type: "date",
+          min: formatDate(new Date(actualMinTimestamp)),
+          max: formatDate(new Date(actualMaxTimestamp)),
+        });
+        return;
       }
-      const totalSamples = entries.reduce((sum, [, count]) => sum + count, 0);
-      if (totalSamples === 0) {
-        return { trimmedMin: undefined, trimmedMax: undefined };
-      }
+    }
 
-      const trimCount = totalSamples >= MIN_SAMPLES_FOR_TRIM ? Math.max(1, Math.floor(totalSamples * OUTLIER_TRIM_FRACTION)) : 0;
-
-      let cumulative = 0;
-      let minTimestamp = entries[0][0];
-      for (let index = 0; index < entries.length; index += 1) {
-        const [timestamp, count] = entries[index];
-        const share = count / totalSamples;
-        const nextTimestamp = entries[index + 1]?.[0];
-        const gapToNext = nextTimestamp !== undefined ? nextTimestamp - timestamp : 0;
-        const shouldTrim =
-          (trimCount > 0 && cumulative + count <= trimCount) ||
-          (entries.length > MIN_DATE_VARIETY && share <= OUTLIER_TRIM_FRACTION && gapToNext > OUTLIER_GAP_MS);
-
-        cumulative += count;
-        if (shouldTrim) {
-          continue;
-        }
-        minTimestamp = timestamp;
-        break;
-      }
-
-      cumulative = 0;
-      let maxTimestamp = entries[entries.length - 1][0];
-      for (let idx = entries.length - 1; idx >= 0; idx -= 1) {
-        const [timestamp, count] = entries[idx];
-        const share = count / totalSamples;
-        const prevTimestamp = entries[idx - 1]?.[0];
-        const gapToPrev = prevTimestamp !== undefined ? timestamp - prevTimestamp : 0;
-        const shouldTrim =
-          (trimCount > 0 && cumulative + count <= trimCount) ||
-          (entries.length > MIN_DATE_VARIETY && share <= OUTLIER_TRIM_FRACTION && gapToPrev > OUTLIER_GAP_MS);
-
-        cumulative += count;
-        if (shouldTrim) {
-          continue;
-        }
-        maxTimestamp = timestamp;
-        break;
-      }
-
-      if (minTimestamp > maxTimestamp) {
-        minTimestamp = entries[0][0];
-        maxTimestamp = entries[entries.length - 1][0];
-      }
-
-      return { trimmedMin: minTimestamp, trimmedMax: maxTimestamp };
-    })();
-
+    // Otherwise, use the normal date detection logic
     if (
       dateRatio >= DATE_SAMPLE_THRESHOLD &&
-      trimmedMin !== undefined &&
-      trimmedMax !== undefined &&
-      trimmedMin !== trimmedMax &&
-      (forceDate.has(key) || acc.dateCounts.size >= MIN_DATE_VARIETY)
+      actualMinTimestamp !== undefined &&
+      actualMaxTimestamp !== undefined &&
+      actualMinTimestamp !== actualMaxTimestamp &&
+      acc.dateCounts.size >= MIN_DATE_VARIETY
     ) {
       definitions.push({
         key,
         label: toLabel(key),
         type: "date",
-        min: formatDate(new Date(trimmedMin)),
-        max: formatDate(new Date(trimmedMax)),
+        min: formatDate(new Date(actualMinTimestamp)),
+        max: formatDate(new Date(actualMaxTimestamp)),
       });
       return;
     }

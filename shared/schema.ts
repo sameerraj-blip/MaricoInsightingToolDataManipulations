@@ -31,6 +31,16 @@ export const insightSchema = z.object({
 
 export type Insight = z.infer<typeof insightSchema>;
 
+// Thinking Steps (for real-time processing display)
+export const thinkingStepSchema = z.object({
+  step: z.string(),
+  status: z.enum(["pending", "active", "completed", "error"]),
+  timestamp: z.number(),
+  details: z.string().optional(),
+});
+
+export type ThinkingStep = z.infer<typeof thinkingStepSchema>;
+
 // Chat Messages
 export const messageSchema = z.object({
   role: z.enum(["user", "assistant"]),
@@ -38,6 +48,7 @@ export const messageSchema = z.object({
   charts: z.array(chartSpecSchema).optional(),
   insights: z.array(insightSchema).optional(),
   timestamp: z.number(),
+  thinkingSteps: z.array(thinkingStepSchema).optional(), // Temporary thinking steps shown during processing
 });
 
 export type Message = z.infer<typeof messageSchema>;

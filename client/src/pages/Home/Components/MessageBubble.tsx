@@ -1,9 +1,12 @@
-import { forwardRef } from 'react';
-import { Message } from '@shared/schema';
-import { User, Bot } from 'lucide-react';
+import { forwardRef, useState } from 'react';
+import { Message, ThinkingStep } from '@shared/schema';
+import { User, Bot, Edit2, Check, X as XIcon } from 'lucide-react';
 import { ChartRenderer } from './ChartRenderer';
 import { InsightCard } from './InsightCard';
 import { DataPreview } from './DataPreview';
+import { ThinkingDisplay } from './ThinkingDisplay';
+import { Textarea } from '@/components/ui/textarea';
+import { Button } from '@/components/ui/button';
 
 interface MessageBubbleProps {
   message: Message;
@@ -13,6 +16,10 @@ interface MessageBubbleProps {
   dateColumns?: string[];
   totalRows?: number;
   totalColumns?: number;
+  onEditMessage?: (messageIndex: number, newContent: string) => void;
+  messageIndex?: number;
+  isLastUserMessage?: boolean;
+  thinkingSteps?: ThinkingStep[]; // Thinking steps to display below user messages
 }
 
 export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(({
@@ -22,9 +29,27 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(({
   numericColumns,
   dateColumns,
   totalRows,
-  totalColumns
+  totalColumns,
+  onEditMessage,
+  messageIndex,
+  isLastUserMessage = false,
+  thinkingSteps,
 }, ref) => {
   const isUser = message.role === 'user';
+  const [isEditing, setIsEditing] = useState(false);
+  const [editValue, setEditValue] = useState(message.content);
+
+  const handleSaveEdit = () => {
+    if (editValue.trim() && onEditMessage && messageIndex !== undefined) {
+      onEditMessage(messageIndex, editValue.trim());
+      setIsEditing(false);
+    }
+  };
+
+  const handleCancelEdit = () => {
+    setEditValue(message.content);
+    setIsEditing(false);
+  };
 
   return (
     <div
@@ -40,14 +65,69 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(({
       
       <div className={`flex-1 max-w-[90%] ${isUser ? 'ml-auto' : 'mr-0'}`}>
         {isUser && (
-          <div
-            className={`rounded-xl px-4 py-3 shadow-sm bg-primary text-primary-foreground ml-auto`}
-            data-testid={`message-content-${message.role}`}
-          >
-            <p className="text-sm leading-relaxed whitespace-pre-wrap">
-              {message.content}
-            </p>
+          <div className="relative group">
+            {isEditing ? (
+              <div className="rounded-xl px-4 py-3 shadow-sm bg-primary text-primary-foreground ml-auto">
+                <Textarea
+                  value={editValue}
+                  onChange={(e) => setEditValue(e.target.value)}
+                  className="bg-transparent border-none text-primary-foreground resize-none min-h-[60px] max-h-[200px] focus-visible:ring-0 focus-visible:ring-offset-0 p-0"
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSaveEdit();
+                    } else if (e.key === 'Escape') {
+                      handleCancelEdit();
+                    }
+                  }}
+                />
+                <div className="flex gap-2 mt-3">
+                  <Button
+                    size="sm"
+                    onClick={handleSaveEdit}
+                    className="h-7 text-xs bg-white/20 hover:bg-white/30 text-white border border-white/30"
+                  >
+                    <Check className="h-3 w-3 mr-1" />
+                    Save & Submit
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={handleCancelEdit}
+                    className="h-7 text-xs text-white/80 hover:text-white hover:bg-white/10"
+                  >
+                    <XIcon className="h-3 w-3 mr-1" />
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div
+                className={`rounded-xl px-4 py-3 shadow-sm bg-primary text-primary-foreground ml-auto relative`}
+                data-testid={`message-content-${message.role}`}
+              >
+                <p className="text-sm leading-relaxed whitespace-pre-wrap">
+                  {message.content}
+                </p>
+                {isLastUserMessage && onEditMessage && (
+                  <button
+                    onClick={() => setIsEditing(true)}
+                    className="absolute -top-8 right-0 opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded-md hover:bg-gray-100 text-gray-600 hover:text-gray-900 text-xs font-medium flex items-center gap-1"
+                    title="Edit message"
+                  >
+                    <Edit2 className="h-3 w-3" />
+                    Edit
+                  </button>
+                )}
+              </div>
+            )}
           </div>
+        )}
+
+        {/* Display thinking steps below user messages */}
+        {isUser && thinkingSteps && thinkingSteps.length > 0 && (
+          <ThinkingDisplay steps={thinkingSteps} />
         )}
 
         {!isUser && message.content && (

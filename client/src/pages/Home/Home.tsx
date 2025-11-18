@@ -35,7 +35,7 @@ export default function Home({ resetTrigger = 0, loadedSessionData }: HomeProps)
     resetState,
   } = useHomeState();
 
-  const { uploadMutation, chatMutation } = useHomeMutations({
+  const { uploadMutation, chatMutation, cancelChatRequest, thinkingSteps, thinkingTargetTimestamp } = useHomeMutations({
     sessionId,
     messages,
     setSessionId,
@@ -50,7 +50,7 @@ export default function Home({ resetTrigger = 0, loadedSessionData }: HomeProps)
     setMessages,
   });
 
-  const { handleFileSelect, handleSendMessage, handleUploadNew } = useHomeHandlers({
+  const { handleFileSelect, handleSendMessage, handleUploadNew, handleEditMessage } = useHomeHandlers({
     sessionId,
     messages,
     setMessages,
@@ -58,6 +58,10 @@ export default function Home({ resetTrigger = 0, loadedSessionData }: HomeProps)
     chatMutation,
     resetState,
   });
+
+  const handleStopGeneration = () => {
+    cancelChatRequest();
+  };
 
   const handleLoadHistory = async () => {
     if (!sessionId || isLoadingHistory) return;
@@ -151,6 +155,10 @@ export default function Home({ resetTrigger = 0, loadedSessionData }: HomeProps)
       dateColumns={dateColumns}
       totalRows={totalRows}
       totalColumns={totalColumns}
+      onStopGeneration={handleStopGeneration}
+      onEditMessage={handleEditMessage}
+      thinkingSteps={thinkingSteps}
+      thinkingTargetTimestamp={thinkingTargetTimestamp}
     />
   );
 }

@@ -1,9 +1,9 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Message } from '@shared/schema';
+import { Message, ThinkingStep } from '@shared/schema';
 import { MessageBubble } from '@/pages/Home/Components/MessageBubble';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { Send, Upload as UploadIcon, Loader2 } from 'lucide-react';
+import { Send, Upload as UploadIcon, Loader2, Square } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 
 interface ChatInterfaceProps {
@@ -20,6 +20,10 @@ interface ChatInterfaceProps {
   dateColumns?: string[];
   totalRows?: number;
   totalColumns?: number;
+  onStopGeneration?: () => void;
+  onEditMessage?: (messageIndex: number, newContent: string) => void;
+  thinkingSteps?: ThinkingStep[]; // Thinking steps to display during loading
+  thinkingTargetTimestamp?: number | null;
 }
 
 // Dynamic suggestions based on conversation context
@@ -66,7 +70,11 @@ export function ChatInterface({
   numericColumns,
   dateColumns,
   totalRows,
-  totalColumns
+  totalColumns,
+  onStopGeneration,
+  onEditMessage,
+  thinkingSteps,
+  thinkingTargetTimestamp,
 }: ChatInterfaceProps) {
   const [inputValue, setInputValue] = useState('');
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -106,6 +114,15 @@ export function ChatInterface({
 
     previousLastTimestampRef.current = lastMessage.timestamp;
   }, [messages]);
+
+  useEffect(() => {
+    if (isLoading && thinkingSteps && thinkingSteps.length > 0 && lastMessageRef.current) {
+      lastMessageRef.current.scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest',
+      });
+    }
+  }, [thinkingSteps, isLoading]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -297,6 +314,12 @@ export function ChatInterface({
           </div>
           {messages.map((message, idx) => {
             const isLastMessage = idx === messages.length - 1;
+            // Check if this is the last user message (for edit button and thinking steps)
+            const isLastUserMessage = message.role === 'user' && 
+              (idx === messages.length - 1 || 
+               (idx < messages.length - 1 && messages[idx + 1].role === 'assistant'));
+            const isThinkingTarget = thinkingTargetTimestamp != null && message.timestamp === thinkingTargetTimestamp;
+            const showThinkingSteps = isThinkingTarget && isLoading && thinkingSteps && thinkingSteps.length > 0;
             return (
               <MessageBubble
                 key={idx}
@@ -307,6 +330,10 @@ export function ChatInterface({
                 dateColumns={idx === 0 ? dateColumns : undefined}
                 totalRows={idx === 0 ? totalRows : undefined}
                 totalColumns={idx === 0 ? totalColumns : undefined}
+                onEditMessage={onEditMessage}
+                messageIndex={idx}
+                isLastUserMessage={isLastUserMessage}
+                thinkingSteps={showThinkingSteps ? thinkingSteps : undefined}
                 ref={isLastMessage ? lastMessageRef : undefined}
               />
             );
@@ -406,19 +433,28 @@ export function ChatInterface({
                 </div>
               )}
             </div>
-            <Button
-              type="submit"
-              disabled={!inputValue.trim() || isLoading}
-              data-testid="button-send"
-              size="icon"
-              className="h-10 w-10 rounded-xl shadow-sm hover:shadow-md transition-all"
-            >
-              {isLoading ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
+            {isLoading && onStopGeneration ? (
+              <Button
+                type="button"
+                onClick={onStopGeneration}
+                data-testid="button-stop"
+                size="icon"
+                className="h-10 w-10 rounded-xl shadow-sm hover:shadow-md transition-all bg-red-500 hover:bg-red-600 text-white"
+                title="Stop generating"
+              >
+                <Square className="w-4 h-4 fill-current" />
+              </Button>
+            ) : (
+              <Button
+                type="submit"
+                disabled={!inputValue.trim() || isLoading}
+                data-testid="button-send"
+                size="icon"
+                className="h-10 w-10 rounded-xl shadow-sm hover:shadow-md transition-all"
+              >
                 <Send className="w-4 h-4" />
-              )}
-            </Button>
+              </Button>
+            )}
           </form>
         </div>
       </div>

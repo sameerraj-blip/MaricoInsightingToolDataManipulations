@@ -9,6 +9,7 @@ import {
   RawDataResponse,
   Dashboard,
   ChartSpec,
+  ThinkingStep,
 } from '@shared/schema';
 
 // Base configuration for your backend
@@ -20,7 +21,7 @@ const API_BASE_URL = import.meta.env.VITE_API_URL ||
 // Create axios instance with default configuration
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 30000, // 30 seconds timeout
+  timeout: 0, // No timeout - wait indefinitely for response
   withCredentials: true,
   headers: {
     'Content-Type': 'application/json',
@@ -53,6 +54,16 @@ apiClient.interceptors.response.use(
     return response;
   },
   async (error: AxiosError) => {
+    // Check if request was cancelled/aborted FIRST - don't treat as network error
+    if (axios.isCancel(error) || error?.code === 'ERR_CANCELED' || error?.name === 'AbortError') {
+      console.log('🚫 Request was cancelled');
+      // Create a custom error that will be caught by apiRequest
+      const cancelError = new Error('Request cancelled');
+      (cancelError as any).isCancel = true;
+      (cancelError as any).code = 'ERR_CANCELED';
+      throw cancelError;
+    }
+    
     // Handle CORS and network errors with retry logic
     if (error.code === 'ERR_NETWORK' || 
         error.message.includes('CORS') || 
@@ -94,13 +105,15 @@ export interface ApiRequestOptions {
   route: string;
   data?: any;
   config?: AxiosRequestConfig;
+  signal?: AbortSignal; // Add abort signal support
 }
 
 export async function apiRequest<T = any>({
   method,
   route,
   data,
-  config = {}
+  config = {},
+  signal
 }: ApiRequestOptions): Promise<T> {
   try {
     console.log(`🌐 Making ${method} request to ${route}`);
@@ -108,12 +121,22 @@ export async function apiRequest<T = any>({
       method,
       url: route,
       data,
+      signal, // Add signal to request
       ...config,
     });
     console.log(`✅ ${method} ${route} - Status: ${response.status}`);
     console.log('📦 Response data:', response.data);
     return response.data;
-  } catch (error) {
+  } catch (error: any) {
+    // Check if request was aborted (check both axios cancel and our custom cancel error)
+    if (axios.isCancel(error) || 
+        error?.name === 'AbortError' || 
+        error?.code === 'ERR_CANCELED' ||
+        error?.isCancel === true ||
+        error?.message === 'Request cancelled') {
+      console.log(`🚫 ${method} ${route} was cancelled`);
+      throw new Error('Request cancelled');
+    }
     console.error(`❌ ${method} ${route} failed:`, error);
     throw error; // Error is already handled by interceptor
   }
@@ -121,20 +144,20 @@ export async function apiRequest<T = any>({
 
 // Convenience methods for common HTTP methods
 export const api = {
-  get: <T = any>(route: string, config?: AxiosRequestConfig) =>
-    apiRequest<T>({ method: 'GET', route, config }),
+  get: <T = any>(route: string, config?: AxiosRequestConfig & { signal?: AbortSignal }) =>
+    apiRequest<T>({ method: 'GET', route, config, signal: config?.signal }),
   
-  post: <T = any>(route: string, data?: any, config?: AxiosRequestConfig) =>
-    apiRequest<T>({ method: 'POST', route, data, config }),
+  post: <T = any>(route: string, data?: any, config?: AxiosRequestConfig & { signal?: AbortSignal }) =>
+    apiRequest<T>({ method: 'POST', route, data, config, signal: config?.signal }),
   
-  put: <T = any>(route: string, data?: any, config?: AxiosRequestConfig) =>
-    apiRequest<T>({ method: 'PUT', route, data, config }),
+  put: <T = any>(route: string, data?: any, config?: AxiosRequestConfig & { signal?: AbortSignal }) =>
+    apiRequest<T>({ method: 'PUT', route, data, config, signal: config?.signal }),
   
-  patch: <T = any>(route: string, data?: any, config?: AxiosRequestConfig) =>
-    apiRequest<T>({ method: 'PATCH', route, data, config }),
+  patch: <T = any>(route: string, data?: any, config?: AxiosRequestConfig & { signal?: AbortSignal }) =>
+    apiRequest<T>({ method: 'PATCH', route, data, config, signal: config?.signal }),
   
-  delete: <T = any>(route: string, config?: AxiosRequestConfig) =>
-    apiRequest<T>({ method: 'DELETE', route, config }),
+  delete: <T = any>(route: string, config?: AxiosRequestConfig & { signal?: AbortSignal }) =>
+    apiRequest<T>({ method: 'DELETE', route, config, signal: config?.signal }),
 };
 
 // File upload helper
@@ -246,6 +269,159 @@ export const sessionsApi = {
 };
 
 export default apiClient;
+
+// Streaming chat request with SSE support
+export interface StreamChatCallbacks {
+  onThinkingStep?: (step: ThinkingStep) => void;
+  onResponse?: (response: ChatResponse) => void;
+  onError?: (error: Error) => void;
+  onDone?: () => void;
+}
+
+export async function streamChatRequest(
+  sessionId: string,
+  message: string,
+  chatHistory: Array<{ role: string; content: string }>,
+  callbacks: StreamChatCallbacks,
+  signal?: AbortSignal
+): Promise<void> {
+  const userEmail = getUserEmail();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  
+  if (userEmail) {
+    headers['X-User-Email'] = userEmail;
+  }
+
+  try {
+    console.log('🌐 Starting SSE stream to:', `${API_BASE_URL}/api/chat/stream`);
+    const response = await fetch(`${API_BASE_URL}/api/chat/stream`, {
+      method: 'POST',
+      headers,
+      credentials: 'include', // Include credentials for CORS
+      body: JSON.stringify({
+        sessionId,
+        message,
+        chatHistory,
+      }),
+      signal,
+    });
+    
+    console.log('📡 SSE response status:', response.status, response.statusText);
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    if (!response.body) {
+      throw new Error('Response body is null');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let currentEventType = 'message';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        
+        if (done) {
+          break;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+        
+        // Process complete SSE messages (event + data pairs separated by double newlines)
+        // SSE format: "event: type\ndata: {...}\n\n"
+        let messageEnd;
+        while ((messageEnd = buffer.indexOf('\n\n')) !== -1) {
+          const message = buffer.substring(0, messageEnd);
+          buffer = buffer.substring(messageEnd + 2);
+          
+          let eventType = 'message';
+          let data = '';
+          
+          const lines = message.split('\n');
+          for (const line of lines) {
+            if (line.startsWith('event: ')) {
+              eventType = line.substring(7).trim();
+            } else if (line.startsWith('data: ')) {
+              data = line.substring(6).trim();
+            }
+          }
+          
+          if (data) {
+            try {
+              const parsed = JSON.parse(data);
+              console.log('📡 SSE event received:', eventType, parsed);
+
+              if (eventType === 'thinking' && callbacks.onThinkingStep) {
+                callbacks.onThinkingStep(parsed as ThinkingStep);
+              } else if (eventType === 'response' && callbacks.onResponse) {
+                callbacks.onResponse(parsed as ChatResponse);
+              } else if (eventType === 'error' && callbacks.onError) {
+                callbacks.onError(new Error(parsed.message || 'Unknown error'));
+              } else if (eventType === 'done' && callbacks.onDone) {
+                callbacks.onDone();
+              }
+            } catch (parseError) {
+              console.error('Error parsing SSE data:', parseError, data);
+            }
+          }
+        }
+      }
+
+      // Process any remaining buffer
+      if (buffer.trim()) {
+        let eventType = 'message';
+        let data = '';
+        
+        const lines = buffer.split('\n');
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            eventType = line.substring(7).trim();
+          } else if (line.startsWith('data: ')) {
+            data = line.substring(6).trim();
+          }
+        }
+        
+        if (data) {
+          try {
+            const parsed = JSON.parse(data);
+            console.log('📡 Final SSE event:', eventType, parsed);
+            
+            if (eventType === 'thinking' && callbacks.onThinkingStep) {
+              callbacks.onThinkingStep(parsed as ThinkingStep);
+            } else if (eventType === 'response' && callbacks.onResponse) {
+              callbacks.onResponse(parsed as ChatResponse);
+            } else if (eventType === 'error' && callbacks.onError) {
+              callbacks.onError(new Error(parsed.message || 'Unknown error'));
+            } else if (eventType === 'done' && callbacks.onDone) {
+              callbacks.onDone();
+            }
+          } catch (parseError) {
+            console.error('Error parsing final SSE data:', parseError);
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  } catch (error: any) {
+    if (error.name === 'AbortError' || signal?.aborted) {
+      console.log('🚫 Stream request was cancelled');
+      return;
+    }
+    
+    if (callbacks.onError) {
+      callbacks.onError(error instanceof Error ? error : new Error(String(error)));
+    } else {
+      throw error;
+    }
+  }
+}
 
 // Dashboards API
 export const dashboardsApi = {

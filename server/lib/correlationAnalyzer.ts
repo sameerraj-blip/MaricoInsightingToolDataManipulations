@@ -441,12 +441,14 @@ Write exactly ${insightCount} insights (one for each variable listed above). Eac
 1. **Bold headline** with the key finding
 2. Exact r and nPairs values
 3. Interpretation of the relationship
-4. **Actionable suggestion** that includes:
-   - Keep the current contextual suggestion (explaining the relationship)
-   - ADD a quantified suggestion with specific targets: "To improve ${targetVariable} to [target value], adjust [factor variable] to [specific value/range]"
+4. **Actionable suggestions** formatted as separate bullet points:
+   - First bullet: **Current suggestion:** [explain the relationship and how it affects the target variable]
+   - Second bullet: **Quantified Action:** To improve ${targetVariable} to [target value], adjust [factor variable] from current average ([current]) to optimal range ([optimal range]) or target value ([target value])
    - Use specific numbers from the quantified statistics above (optimal ranges, percentiles, averages)
    - NEVER use percentile labels like "P75", "P90", "P25", "P75 level", "P90 level", "P75 value", "P90 value" - ONLY use the numeric values themselves
-   - Example format: "**Current suggestion:** [explain relationship]. **Quantified Action:** To improve ${targetVariable} to [target value], adjust [factor] from current average ([current]) to optimal range ([optimal range]) or target value ([target value])."
+   - Example format:
+     * **Current suggestion:** [explain relationship]
+     * **Quantified Action:** To improve ${targetVariable} to [target value], adjust [factor] from current average ([current]) to optimal range ([optimal range]) or target value ([target value])
 5. End with: "Reminder: Correlation does not imply causation."
 
 IMPORTANT: Generate exactly ${insightCount} insights - one for each of the ${insightCount} variables listed above, in order of correlation strength (strongest first).
@@ -458,7 +460,7 @@ Output JSON only: {"insights":[{"text":"..."}]}`;
     messages: [
       {
         role: 'system',
-        content: 'You are a senior data analyst providing detailed correlation insights. Be specific, use correlation values, and provide actionable suggestions. Always end correlation insights with exactly: "Reminder: Correlation does not imply causation." (never use "correlation != causation" or variations). Output valid JSON.',
+        content: 'You are a senior data analyst providing detailed correlation insights. Be specific, use correlation values, and provide actionable suggestions. Format "Current suggestion" and "Quantified Action" as separate bullet points (using * or -). Always end correlation insights with exactly: "Reminder: Correlation does not imply causation." (never use "correlation != causation" or variations). Output valid JSON.',
       },
       {
         role: 'user',

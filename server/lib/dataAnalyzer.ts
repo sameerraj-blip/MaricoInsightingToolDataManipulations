@@ -112,7 +112,8 @@ export async function answerQuestion(
   chatHistory: Message[],
   summary: DataSummary,
   sessionId?: string,
-  chatInsights?: Insight[]
+  chatInsights?: Insight[],
+  onThinkingStep?: (step: { step: string; status: 'pending' | 'active' | 'completed' | 'error'; timestamp: number; details?: string }) => void
 ): Promise<{ answer: string; charts?: ChartSpec[]; insights?: Insight[] }> {
   // CRITICAL: This log should ALWAYS appear first
   console.log('🚀 answerQuestion() CALLED with question:', question);
@@ -155,7 +156,8 @@ export async function answerQuestion(
       data,
       summary,
       sessionId || 'unknown',
-      chatInsights
+      chatInsights,
+      onThinkingStep
     );
     
     console.log('📤 Agent system result:', { 

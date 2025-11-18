@@ -1,8 +1,9 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Message, UploadResponse, ChatResponse } from '@shared/schema';
-import { apiRequest, uploadFile } from '@/lib/api';
+import { Message, UploadResponse, ChatResponse, ThinkingStep } from '@shared/schema';
+import { uploadFile, streamChatRequest } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { getUserEmail } from '@/utils/userStorage';
+import { useRef, useEffect, useState } from 'react';
 
 interface UseHomeMutationsProps {
   sessionId: string | null;
@@ -36,6 +37,15 @@ export const useHomeMutations = ({
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const userEmail = getUserEmail();
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const messagesRef = useRef<Message[]>(messages);
+  const [thinkingSteps, setThinkingSteps] = useState<ThinkingStep[]>([]);
+  const [thinkingTargetTimestamp, setThinkingTargetTimestamp] = useState<number | null>(null);
+  
+  // Keep messagesRef in sync with messages
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   const sanitizeMarkdown = (text: string) =>
     text
@@ -96,13 +106,41 @@ export const useHomeMutations = ({
   });
 
   const chatMutation = useMutation({
-    mutationFn: async (message: string) => {
+    mutationFn: async ({ message, targetTimestamp }: { message: string; targetTimestamp?: number }): Promise<ChatResponse> => {
+      // Cancel previous request if any
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+      
+      // Create new abort controller
+      abortControllerRef.current = new AbortController();
+      
+      // Clear previous thinking steps
+      setThinkingSteps([]);
+      setThinkingTargetTimestamp(null);
+      
       console.log('📤 Sending chat message:', message);
       console.log('📋 SessionId:', sessionId);
-      console.log('💬 Chat history length:', messages.length);
+      
+      if (!sessionId) {
+        throw new Error('Session ID is required');
+      }
+      
+      // Use ref to get latest messages (important for edit functionality)
+      const currentMessages = messagesRef.current;
+      console.log('💬 Chat history length:', currentMessages.length);
+      
+      const lastUserMessage = targetTimestamp
+        ? { timestamp: targetTimestamp }
+        : [...currentMessages].reverse().find(msg => msg.role === 'user');
+      if (lastUserMessage) {
+        setThinkingTargetTimestamp(lastUserMessage.timestamp);
+      } else {
+        setThinkingTargetTimestamp(null);
+      }
       
       // Send full chat history for context (last 15 messages to maintain conversation flow)
-      const chatHistory = messages.slice(-15).map(msg => ({
+      const chatHistory = currentMessages.slice(-15).map(msg => ({
         role: msg.role,
         content: msg.content,
       }));
@@ -113,23 +151,66 @@ export const useHomeMutations = ({
         chatHistoryLength: chatHistory.length,
       });
       
-      try {
-        const response = await apiRequest<ChatResponse>({
-          method: 'POST',
-          route: '/api/chat',
-          data: {
-            sessionId,
-            message,
-            chatHistory,
-          },
-        });
+      return new Promise<ChatResponse>((resolve, reject) => {
+        let responseData: ChatResponse | null = null;
         
-        console.log('✅ API request successful, response:', response);
-        return response;
-      } catch (error) {
-        console.error('❌ API request failed:', error);
-        throw error;
-      }
+        streamChatRequest(
+          sessionId,
+          message,
+          chatHistory,
+          {
+            onThinkingStep: (step: ThinkingStep) => {
+              console.log('🧠 Thinking step received:', step);
+              setThinkingSteps((prev) => {
+                // Update or add the step
+                const existingIndex = prev.findIndex(s => s.step === step.step);
+                if (existingIndex >= 0) {
+                  const updated = [...prev];
+                  updated[existingIndex] = step;
+                  console.log('🔄 Updated thinking steps:', updated);
+                  return updated;
+                }
+                const newSteps = [...prev, step];
+                console.log('➕ Added thinking step. Total steps:', newSteps.length);
+                return newSteps;
+              });
+            },
+            onResponse: (response: ChatResponse) => {
+              console.log('✅ API response received:', response);
+              responseData = response;
+            },
+            onError: (error: Error) => {
+              console.error('❌ API request failed:', error);
+              setThinkingSteps([]);
+              setThinkingTargetTimestamp(null);
+              reject(error);
+            },
+            onDone: () => {
+              console.log('✅ Stream completed');
+              setThinkingSteps([]);
+              setThinkingTargetTimestamp(null);
+              if (responseData) {
+                resolve(responseData);
+              } else {
+                reject(new Error('No response received'));
+              }
+            },
+          },
+          abortControllerRef.current.signal
+        ).catch((error: any) => {
+          // Check if request was cancelled
+            if (error?.name === 'AbortError' || abortControllerRef.current?.signal.aborted) {
+            console.log('🚫 Request was cancelled by user');
+              setThinkingSteps([]);
+              setThinkingTargetTimestamp(null);
+            reject(new Error('Request cancelled'));
+          } else {
+            setThinkingSteps([]);
+              setThinkingTargetTimestamp(null);
+            reject(error);
+          }
+        });
+      });
     },
     onSuccess: (data, message) => {
       console.log('✅ Chat response received:', data);
@@ -163,6 +244,10 @@ export const useHomeMutations = ({
       });
     },
     onError: (error) => {
+      // Don't show toast for cancelled requests
+      if (error instanceof Error && error.message === 'Request cancelled') {
+        return;
+      }
       toast({
         title: 'Error',
         description: error instanceof Error ? error.message : 'Failed to send message',
@@ -171,8 +256,22 @@ export const useHomeMutations = ({
     },
   });
 
+  // Function to cancel ongoing chat request
+  const cancelChatRequest = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+      setThinkingSteps([]);
+      setThinkingTargetTimestamp(null);
+      chatMutation.reset();
+    }
+  };
+
   return {
     uploadMutation,
     chatMutation,
+    cancelChatRequest,
+    thinkingSteps, // Export thinking steps for display
+    thinkingTargetTimestamp,
   };
 };

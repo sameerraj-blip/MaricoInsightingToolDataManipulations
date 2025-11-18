@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { sessionsApi } from '@/lib/api';
 import { getUserEmail } from '@/utils/userStorage';
-import { Search, Plus, Calendar, FileText, MessageSquare, BarChart3, Loader2, Trash2, Edit2 } from 'lucide-react';
+import { Search, Plus, Calendar, FileText, MessageSquare, BarChart3, Loader2, Trash2, Edit2, ArrowUpDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -28,6 +28,13 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 
 interface Session {
   id: string;
@@ -56,6 +63,7 @@ interface AnalysisProps {
 
 const Analysis: React.FC<AnalysisProps> = ({ onNavigate, onNewChat, onLoadSession, onUploadNew }) => {
   const [searchQuery, setSearchQuery] = useState('');
+  const [sortOrder, setSortOrder] = useState<'newest' | 'oldest'>('newest');
   const [filteredSessions, setFilteredSessions] = useState<Session[]>([]);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [sessionToDelete, setSessionToDelete] = useState<Session | null>(null);
@@ -115,16 +123,27 @@ const Analysis: React.FC<AnalysisProps> = ({ onNavigate, onNewChat, onLoadSessio
     };
   }, [userEmail, refetch]);
 
-  // Filter sessions based on search query
+  // Filter and sort sessions based on search query and sort order
   useEffect(() => {
     if (sessionsData?.sessions) {
-      const filtered = sessionsData.sessions.filter(session =>
+      // First filter sessions
+      let filtered = sessionsData.sessions.filter(session =>
         session.fileName.toLowerCase().includes(searchQuery.toLowerCase()) ||
         session.id.toLowerCase().includes(searchQuery.toLowerCase())
       );
+      
+      // Then sort by lastUpdatedAt
+      filtered = [...filtered].sort((a, b) => {
+        if (sortOrder === 'newest') {
+          return b.lastUpdatedAt - a.lastUpdatedAt; // Newest first
+        } else {
+          return a.lastUpdatedAt - b.lastUpdatedAt; // Oldest first
+        }
+      });
+      
       setFilteredSessions(filtered);
     }
-  }, [sessionsData, searchQuery]);
+  }, [sessionsData, searchQuery, sortOrder]);
 
   // Handle session click
   const handleSessionClick = async (session: Session) => {
@@ -335,16 +354,30 @@ const Analysis: React.FC<AnalysisProps> = ({ onNavigate, onNewChat, onLoadSessio
           </Button>
         </div>
 
-        {/* Search Bar */}
-        <div className="relative mb-6">
-          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
-          <Input
-            type="text"
-            placeholder="Search your analyses..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="pl-10 h-12 text-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500"
-          />
+        {/* Search Bar and Sort */}
+        <div className="flex gap-4 mb-6">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
+            <Input
+              type="text"
+              placeholder="Search your analyses..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-10 h-12 text-lg border-gray-300 focus:border-blue-500 focus:ring-blue-500"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <ArrowUpDown className="h-4 w-4 text-gray-500" />
+            <Select value={sortOrder} onValueChange={(value: 'newest' | 'oldest') => setSortOrder(value)}>
+              <SelectTrigger className="w-[180px] h-12 border-gray-300">
+                <SelectValue placeholder="Sort by" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="newest">Newest First</SelectItem>
+                <SelectItem value="oldest">Oldest First</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </div>
 
         {/* Sessions List */}

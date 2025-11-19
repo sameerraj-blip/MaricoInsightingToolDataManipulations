@@ -338,17 +338,6 @@ export function ChatInterface({
               />
             );
           })}
-          
-          {isLoading && (
-            <div className="flex gap-3 justify-start mb-6">
-              <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gradient-to-br from-primary to-primary/80 flex items-center justify-center shadow-sm">
-                <Loader2 className="w-4 h-4 text-primary-foreground animate-spin" />
-              </div>
-              <Card className="bg-white px-4 py-3 rounded-xl shadow-sm border border-gray-100">
-                <p className="text-xs text-gray-600">Analyzing your question...</p>
-              </Card>
-            </div>
-          )}
         </div>
       </div>
 

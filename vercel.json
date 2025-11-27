@@ -10,7 +10,7 @@
       "maxDuration": 60
     },
     "api/data-ops/index.py": {
-      "runtime": "@vercel/python@2.5.1",
+      "runtime": "@vercel/python@1.5.1",
       "memory": 1024,
       "maxDuration": 60,
       "includeFiles": "python-service/**"

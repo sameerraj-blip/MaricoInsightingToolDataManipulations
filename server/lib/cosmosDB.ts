@@ -118,12 +118,32 @@ export interface ChatDocument {
     blobUrl: string;
     blobName: string;
   };
+  currentDataBlob?: { // Current processed data blob (for data operations)
+    blobUrl: string;
+    blobName: string;
+    version: number;
+    lastUpdated: number;
+  };
+  dataVersions?: Array<{ // Version history for data operations
+    versionId: string;
+    blobName: string;
+    operation: string;
+    description: string;
+    timestamp: number;
+    parameters?: any;
+    affectedRows?: number;
+    affectedColumns?: string[];
+    rowsBefore?: number;
+    rowsAfter?: number;
+  }>;
+  dataOpsContext?: any; // Context for data operations (pending operations, filters, etc.)
   analysisMetadata: { // Additional metadata about the analysis
     totalProcessingTime: number; // Time taken to process the file
     aiModelUsed: string; // AI model used for analysis
     fileSize: number; // Original file size in bytes
     analysisVersion: string; // Version of analysis algorithm
   };
+  dataOpsMode?: boolean; // Whether Data Ops mode is enabled for this session
 }
 
 const normalizeEmail = (value: string) => value?.trim().toLowerCase();
@@ -430,6 +450,60 @@ export const addMessagesBySessionId = async (
     return updated;
   } catch (error) {
     console.error("❌ Failed to add messages by sessionId:", error);
+    throw error;
+  }
+};
+
+// Update a message and truncate all messages after it (used when editing a message)
+export const updateMessageAndTruncate = async (
+  sessionId: string,
+  targetTimestamp: number,
+  updatedContent: string
+): Promise<ChatDocument> => {
+  try {
+    console.log("✏️ updateMessageAndTruncate - sessionId:", sessionId, "targetTimestamp:", targetTimestamp);
+    const chatDocumentAny = await getChatBySessionIdEfficient(sessionId as any);
+    const chatDocument = chatDocumentAny as unknown as ChatDocument | null;
+    if (!chatDocument) {
+      throw new Error("Chat document not found for sessionId");
+    }
+
+    if (!chatDocument.messages || chatDocument.messages.length === 0) {
+      throw new Error("No messages found in chat document");
+    }
+
+    // Find the message to update by timestamp
+    const messageIndex = chatDocument.messages.findIndex(
+      (msg) => msg.timestamp === targetTimestamp && msg.role === 'user'
+    );
+
+    if (messageIndex === -1) {
+      throw new Error(`Message with timestamp ${targetTimestamp} not found`);
+    }
+
+    console.log(`🗂️ Found message at index ${messageIndex}, truncating all messages after it`);
+    console.log(`📊 Messages before truncation: ${chatDocument.messages.length}`);
+
+    // Update the message content
+    chatDocument.messages[messageIndex] = {
+      ...chatDocument.messages[messageIndex],
+      content: updatedContent,
+    };
+
+    // Remove all messages after the edited message
+    const messagesToRemove = chatDocument.messages.length - messageIndex - 1;
+    if (messagesToRemove > 0) {
+      chatDocument.messages.splice(messageIndex + 1);
+      console.log(`🗑️ Removed ${messagesToRemove} messages after the edited message`);
+    }
+
+    console.log(`📊 Messages after truncation: ${chatDocument.messages.length}`);
+
+    const updated = await updateChatDocument(chatDocument);
+    console.log("✅ Updated message and truncated chat doc:", updated.id, "messages now:", updated.messages?.length || 0);
+    return updated;
+  } catch (error) {
+    console.error("❌ Failed to update message and truncate:", error);
     throw error;
   }
 };

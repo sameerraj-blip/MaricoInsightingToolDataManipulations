@@ -35,6 +35,8 @@ export interface HandlerResponse {
   requiresClarification?: boolean;
   error?: string;
   suggestions?: string[];
+  table?: any;
+  operationResult?: any;
 }
 
 /**

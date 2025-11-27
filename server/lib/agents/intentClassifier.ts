@@ -32,6 +32,11 @@ export const analysisIntentSchema = z.object({
 
 export type AnalysisIntent = z.infer<typeof analysisIntentSchema> & {
   originalQuestion?: string; // Added by orchestrator
+  // Extended fields used by Data Ops mode
+  operation?: string;
+  column?: string;
+  targetType?: string;
+  limit?: number;
 };
 
 /**

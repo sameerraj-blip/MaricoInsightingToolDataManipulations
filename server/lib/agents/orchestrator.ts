@@ -5,6 +5,7 @@ import { BaseHandler, HandlerContext, HandlerResponse } from './handlers/baseHan
 import { DataSummary, Message, ChartSpec, Insight, ThinkingStep } from '../../../shared/schema.js';
 import { createErrorResponse, getFallbackSuggestions } from './utils/errorRecovery.js';
 import { askClarifyingQuestion } from './utils/clarification.js';
+import { DataOpsHandler } from './handlers/dataOpsHandler.js';
 
 export type ThinkingStepCallback = (step: ThinkingStep) => void;
 
@@ -83,18 +84,139 @@ export class AgentOrchestrator {
     summary: DataSummary,
     sessionId: string,
     chatInsights?: Insight[],
-    onThinkingStep?: ThinkingStepCallback
-  ): Promise<{ answer: string; charts?: ChartSpec[]; insights?: Insight[] }> {
+    onThinkingStep?: ThinkingStepCallback,
+    mode?: string
+  ): Promise<{ answer: string; charts?: ChartSpec[]; insights?: Insight[]; table?: any; operationResult?: any }> {
     try {
-      console.log(`\n🔍 Processing query: "${question}"`);
+      console.log(`\n🔍 Processing query: "${question}" (mode: ${mode || 'analysis'})`);
 
       // Reset current active step at the start
       this.currentActiveStep = null;
       
+      // ============================================
+      // COMPLETE SEPARATE ROUTE FOR DATA OPS MODE
+      // ============================================
+      if (mode === 'dataOps') {
+        console.log(`🔧 Data Ops Mode: Using separate route (bypassing analysis logic)`);
+        
+        // Step 1: Resolve context references (minimal, just for "that", "it", etc.)
+        this.emitThinkingStep(onThinkingStep, "Understanding your question", "active");
+        const enrichedQuestion = resolveContextReferences(question, chatHistory);
+        this.emitThinkingStep(onThinkingStep, "Understanding your question", "completed");
+        
+        // Step 2: Extract operation from query (let DataOpsHandler use AI-based detection)
+        this.emitThinkingStep(onThinkingStep, "Identifying data operation", "active");
+        // Don't pre-determine operation here - let DataOpsHandler's AI classifier handle it
+        // This allows better context-aware detection (e.g., feature engineering vs add_column)
+        let operation: string | undefined;
+        
+        // Only do basic regex for obvious cases, let handler do AI detection for ambiguous ones
+        const queryLower = enrichedQuestion.toLowerCase();
+        if (queryLower.match(/\b(delete|remove|drop)\s+(row|rows?)\b/) || 
+            queryLower.match(/\b(delete|remove|drop)\s+.*\b(row|rows?)\b/)) {
+          operation = 'delete_rows';
+        } else if (queryLower.match(/\b(remove|delete|impute|fill)\s+null/)) {
+          operation = 'remove_nulls';
+        } else if (queryLower.match(/\b(convert|change)\s+type/)) {
+          operation = 'convert_type';
+        } else if (queryLower.match(/\b(delete|remove|drop)\s+(?:the\s+)?column\b/) ||
+                   queryLower.match(/\b(delete|remove|drop)\s+[a-z0-9_\s]+column\b/)) {
+          operation = 'remove_column';
+        } else if (queryLower.match(/\b(show|display|preview|give me|last|first|top)\s+.*rows?/i) || queryLower.match(/\brows?\b/)) {
+          operation = 'preview';
+        } else if (queryLower.match(/\b(summary|statistics|describe|stats)/)) {
+          operation = 'summary';
+        }
+        // For add_column/feature_engineering/update_column, let handler's AI classifier decide
+        
+        // Create intent for DataOpsHandler
+        const intent: AnalysisIntent = {
+          type: 'dataOps' as const,
+          confidence: 1.0,
+          customRequest: enrichedQuestion,
+          operation: operation as any,
+          requiresClarification: false,
+        };
+        
+        this.emitThinkingStep(onThinkingStep, "Identifying data operation", "completed", operation ? `Operation: ${operation}` : 'Analyzing request');
+        
+        // Step 3: Get DataOpsHandler directly (no findHandler, no RAG, no analysis logic)
+        const dataOpsHandler = this.handlers.find(h => h instanceof DataOpsHandler);
+        
+        if (!dataOpsHandler) {
+          console.error('❌ DataOpsHandler not found!');
+          return {
+            answer: 'Data Operations handler is not available. Please contact support.',
+            error: 'DataOpsHandler not registered',
+          };
+        }
+        
+        // Step 4: Build minimal context (no RAG retrieval needed for data ops)
+        const handlerContext: HandlerContext = {
+          data, // Will be replaced by handler with full dataset from blob
+          summary,
+          context: {
+            dataChunks: [],
+            pastQueries: [],
+            mentionedColumns: [],
+          }, // Empty context - data ops don't need RAG
+          chatHistory,
+          sessionId,
+          chatInsights,
+        };
+        
+        // Step 5: Execute DataOpsHandler directly
+        this.emitThinkingStep(onThinkingStep, "Performing data operation", "active");
+        
+        try {
+          const intentWithQuestion = { ...intent, originalQuestion: enrichedQuestion };
+          const response = await dataOpsHandler.handle(intentWithQuestion, handlerContext);
+          
+          this.emitThinkingStep(onThinkingStep, "Performing data operation", "completed");
+          
+          // Handle response
+          if (response.error) {
+            console.log(`⚠️ DataOpsHandler returned error: ${response.error}`);
+            this.emitThinkingStep(onThinkingStep, "Performing data operation", "error", response.error);
+            return {
+              answer: response.answer || `Error: ${response.error}`,
+              error: response.error,
+              table: response.table,
+              operationResult: response.operationResult,
+            };
+          }
+          
+          if (response.requiresClarification) {
+            this.emitThinkingStep(onThinkingStep, "Need more information", "active");
+            return askClarifyingQuestion(intent, summary);
+          }
+          
+          // Success - return response
+          return {
+            answer: response.answer,
+            charts: response.charts,
+            insights: response.insights,
+            table: response.table,
+            operationResult: response.operationResult,
+          };
+          
+        } catch (error) {
+          console.error('❌ DataOpsHandler error:', error);
+          this.emitThinkingStep(onThinkingStep, "Performing data operation", "error", error instanceof Error ? error.message : String(error));
+          return {
+            answer: `An error occurred while performing the data operation: ${error instanceof Error ? error.message : String(error)}`,
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+      }
+      
+      // ============================================
+      // ANALYSIS MODE ROUTE (existing logic)
+      // ============================================
+      
       this.emitThinkingStep(onThinkingStep, "Understanding your question", "active");
 
       // Step 1: Resolve context references ("that", "it", etc.)
-      // Complete "Understanding your question" before starting the next step
       this.emitThinkingStep(onThinkingStep, "Understanding your question", "completed");
       this.emitThinkingStep(onThinkingStep, "Checking what you meant earlier", "active");
       const enrichedQuestion = resolveContextReferences(question, chatHistory);
@@ -105,15 +227,13 @@ export class AgentOrchestrator {
         this.emitThinkingStep(onThinkingStep, "Checking what you meant earlier", "completed");
       }
 
-      // Step 2: Classify intent
+      // Step 2: Classify intent (only for analysis mode)
       this.emitThinkingStep(onThinkingStep, "Figuring out the best way to answer", "active");
       const intent = await classifyIntent(enrichedQuestion, chatHistory, summary);
       console.log(`🎯 Intent: ${intent.type} (confidence: ${intent.confidence.toFixed(2)})`);
       this.emitThinkingStep(onThinkingStep, "Figuring out the best way to answer", "completed");
 
       // Step 3: Check if clarification needed
-      // For conversational queries, skip clarification - they're usually simple greetings
-      // Only ask for clarification if explicitly required AND not conversational
       if (intent.type === 'conversational') {
         console.log(`💬 Conversational query detected, skipping clarification check`);
       } else if (intent.requiresClarification || intent.confidence < 0.5) {
@@ -122,7 +242,7 @@ export class AgentOrchestrator {
         return askClarifyingQuestion(intent, summary);
       }
 
-      // Step 4: Retrieve context (RAG)
+      // Step 4: Retrieve context (RAG) - only for analysis mode
       this.emitThinkingStep(onThinkingStep, "Looking through your data", "active");
       const context = await retrieveContext(
         enrichedQuestion,
@@ -150,7 +270,6 @@ export class AgentOrchestrator {
       if (!handler) {
         console.log(`⚠️ No handler found for intent type: ${intent.type}`);
         this.emitThinkingStep(onThinkingStep, "Choosing the right analysis path", "error", "Couldn't find a matching approach");
-        // Fallback to general handler or return error
         return this.handleFallback(intent, handlerContext, onThinkingStep);
       }
 
@@ -159,10 +278,8 @@ export class AgentOrchestrator {
       this.emitThinkingStep(onThinkingStep, "Choosing the right analysis path", "completed", `Going with ${handlerName}`);
 
       // Step 7: Execute handler
-      // Emit handler-specific thinking step (declare outside try so it's accessible in catch)
       const handlerTask = this.getHandlerTaskDescription(intent.type);
       try {
-        // Add original question to intent for handlers that need it
         const intentWithQuestion = { ...intent, originalQuestion: enrichedQuestion };
         
         this.emitThinkingStep(onThinkingStep, handlerTask, "active");
@@ -210,6 +327,8 @@ export class AgentOrchestrator {
           answer: response.answer,
           charts: response.charts,
           insights: response.insights,
+          table: response.table,
+          operationResult: response.operationResult,
         };
       } catch (handlerError) {
         console.error(`❌ Handler execution failed:`, handlerError);
@@ -253,6 +372,8 @@ export class AgentOrchestrator {
       'aggregation': 'Summarizing the numbers',
       'filter': 'Focusing on the most relevant data',
       'chart': 'Designing the right visualization',
+      'dataOps': 'Manipulating your data',
+      'modelling': 'Building a predictive model',
       'general': 'Digging into the data for answers',
       'custom': 'Working through your request',
       'conversational': 'Crafting a reply',
@@ -279,7 +400,7 @@ export class AgentOrchestrator {
     intent: AnalysisIntent,
     context: HandlerContext,
     onThinkingStep?: ThinkingStepCallback
-  ): Promise<{ answer: string; charts?: ChartSpec[]; insights?: Insight[] }> {
+  ): Promise<{ answer: string; charts?: ChartSpec[]; insights?: Insight[]; table?: any; operationResult?: any }> {
     // Try to use general handler if available (it can handle custom types)
     const generalHandler = this.handlers.find(h => h.canHandle(intent));
     
@@ -290,6 +411,8 @@ export class AgentOrchestrator {
           answer: response.answer,
           charts: response.charts,
           insights: response.insights,
+          table: response.table,
+          operationResult: response.operationResult,
         };
       } catch (error) {
         // Continue to error handling
@@ -324,7 +447,7 @@ export class AgentOrchestrator {
     intent: AnalysisIntent,
     context: HandlerContext,
     onThinkingStep?: ThinkingStepCallback
-  ): Promise<{ answer: string; charts?: ChartSpec[]; insights?: Insight[] }> {
+  ): Promise<{ answer: string; charts?: ChartSpec[]; insights?: Insight[]; table?: any; operationResult?: any }> {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.log(`🔄 Error recovery: ${errorMessage}`);
 
@@ -342,6 +465,8 @@ export class AgentOrchestrator {
             answer: response.answer,
             charts: response.charts,
             insights: response.insights,
+            table: response.table,
+            operationResult: response.operationResult,
           };
         }
       } catch (fallbackError) {

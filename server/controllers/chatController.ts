@@ -3,16 +3,16 @@ import { answerQuestion } from "../lib/dataAnalyzer.js";
 import { processChartData } from "../lib/chartGenerator.js";
 import { generateChartInsights } from "../lib/insightGenerator.js";
 import { chatResponseSchema, ThinkingStep } from "../../shared/schema.js";
-import { getChatBySessionIdForUser, addMessagesBySessionId, getChatBySessionIdEfficient } from "../lib/cosmosDB.js";
+import { getChatBySessionIdForUser, addMessagesBySessionId, getChatBySessionIdEfficient, updateMessageAndTruncate } from "../lib/cosmosDB.js";
 import { generateAISuggestions } from '../lib/suggestionGenerator.js';
 
 export const chatWithAI = async (req: Request, res: Response) => {
   try {
     console.log('📨 chatWithAI() called');
-    const { sessionId, message, chatHistory } = req.body;
+    const { sessionId, message, chatHistory, targetTimestamp } = req.body;
     const username = (req.body.username as string) || (req.headers['x-user-email'] as string);
 
-    console.log('📥 Request body:', { sessionId, message: message?.substring(0, 50), chatHistoryLength: chatHistory?.length });
+    console.log('📥 Request body:', { sessionId, message: message?.substring(0, 50), chatHistoryLength: chatHistory?.length, targetTimestamp });
 
     if (!sessionId || !message) {
       console.log('❌ Missing required fields');
@@ -21,6 +21,18 @@ export const chatWithAI = async (req: Request, res: Response) => {
 
     if (!username) {
       return res.status(401).json({ error: 'Missing authenticated user email' });
+    }
+
+    // If targetTimestamp is provided, this is an edit operation - update the message and truncate all messages after it
+    if (targetTimestamp) {
+      console.log('✏️ Editing message with targetTimestamp:', targetTimestamp);
+      try {
+        await updateMessageAndTruncate(sessionId, targetTimestamp, message);
+        console.log('✅ Message updated and messages truncated in database');
+      } catch (truncateError) {
+        console.error('⚠️ Failed to update message and truncate:', truncateError);
+        // Continue with the chat request even if truncation fails
+      }
     }
 
     // Get chat document from CosmosDB by session ID
@@ -222,10 +234,10 @@ export const chatWithAIStream = async (req: Request, res: Response) => {
 
   try {
     console.log('📨 chatWithAIStream() called');
-    const { sessionId, message, chatHistory } = req.body;
+    const { sessionId, message, chatHistory, targetTimestamp } = req.body;
     const username = (req.body.username as string) || (req.headers['x-user-email'] as string);
 
-    console.log('📥 Request body:', { sessionId, message: message?.substring(0, 50), chatHistoryLength: chatHistory?.length });
+    console.log('📥 Request body:', { sessionId, message: message?.substring(0, 50), chatHistoryLength: chatHistory?.length, targetTimestamp });
 
     if (!sessionId || !message) {
       console.log('❌ Missing required fields');
@@ -238,6 +250,18 @@ export const chatWithAIStream = async (req: Request, res: Response) => {
       sendSSE(res, 'error', { message: 'Missing authenticated user email' });
       res.end();
       return;
+    }
+
+    // If targetTimestamp is provided, this is an edit operation - update the message and truncate all messages after it
+    if (targetTimestamp) {
+      console.log('✏️ Editing message with targetTimestamp:', targetTimestamp);
+      try {
+        await updateMessageAndTruncate(sessionId, targetTimestamp, message);
+        console.log('✅ Message updated and messages truncated in database');
+      } catch (truncateError) {
+        console.error('⚠️ Failed to update message and truncate:', truncateError);
+        // Continue with the chat request even if truncation fails
+      }
     }
 
     // Get chat document from CosmosDB by session ID

@@ -88,6 +88,7 @@ Make sure to add these in Vercel Dashboard → Settings → Environment Variable
 - `AZURE_CLIENT_ID`
 - `AZURE_CLIENT_SECRET`
 - `AZURE_TENANT_ID`
+- `MAX_ROWS`, `MAX_PREVIEW_ROWS`, `PYTHON_SERVICE_HOST`, `PYTHON_SERVICE_PORT` (Python FastAPI tunables, default values cover most deployments)
 
 ## ⚠️ IMPORTANT: Azure AD Configuration
 
@@ -104,16 +105,18 @@ See `VERCEL_AZURE_AD_FIX.md` for detailed instructions.
 ## 🔧 How It Works
 
 1. **Frontend**: Built from `client/` folder → Output to `client/dist`
-2. **Backend**: Express app wrapped as serverless function in `api/index.ts`
-3. **Routing**:
-   - `/api/*` → Serverless function (Express app)
+2. **Node backend**: Express app wrapped as serverless function in `api/index.ts`
+3. **Python data-ops backend**: FastAPI app reused from `python-service/` and exposed through `api/data-ops/index.py`
+4. **Routing** (handled in `vercel.json`):
+   - `/api/data-ops/*` → Python FastAPI service (data transformations)
+   - `/api/*` → Node/Express serverless function
    - `/*` → Static files from `client/dist`
 
 ## ⚠️ Important Notes
 
 ### Vercel Limitations:
 - **Function timeout**: 60 seconds (configured in vercel.json)
-- **Memory**: 3008 MB (configured)
+- **Memory**: Node API uses default memory, Python data-ops uses 1024 MB (adjust via `vercel.json` if needed)
 - **File uploads**: Limited to 4.5MB per request (Vercel limit)
 - **WebSockets**: Not supported (if you use WebSockets, consider Railway/Render)
 
@@ -128,9 +131,11 @@ See `VERCEL_AZURE_AD_FIX.md` for detailed instructions.
 
 After deployment, test these endpoints:
 
-- `https://your-app.vercel.app/api/health` - Should return `{status: 'OK'}`
+- `https://your-app.vercel.app/api/health` - Should return `{status: 'OK'}` from the Node backend
 - `https://your-app.vercel.app/` - Should show your React app
 - `https://your-app.vercel.app/api/chat` - Test chat endpoint
+- `https://your-app.vercel.app/api/data-ops/health` - Should return `{status: 'ok', service: 'data-ops'}` from FastAPI
+- `https://your-app.vercel.app/api/data-ops/preview` - POST sample payload to verify Python pipeline
 
 ## 📝 Next Steps
 
